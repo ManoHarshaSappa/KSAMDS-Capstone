@@ -1,0 +1,372 @@
+name: KSAMDS Data Pipeline
+
+on:
+  # Scheduled run: Daily at 2 AM UTC to check for O*NET updates
+  schedule:
+    - cron: '0 2 1 1,7 *'
+  
+  # Manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      force_download:
+        description: 'Force re-download O*NET database'
+        required: false
+        type: boolean
+        default: false
+      skip_extraction:
+        description: 'Skip extraction stage'
+        required: false
+        type: boolean
+        default: false
+      skip_mapping:
+        description: 'Skip mapping stage'
+        required: false
+        type: boolean
+        default: false
+      skip_relationship_inference:
+        description: 'Skip relationship inference stage'
+        required: false
+        type: boolean
+        default: false
+      skip_loading:
+        description: 'Skip database loading stage'
+        required: false
+        type: boolean
+        default: false
+      skip_validation:
+        description: 'Skip validation stage'
+        required: false
+        type: boolean
+        default: false
+  
+  # Trigger on push to main when ETL code changes
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/backend/etl/**'
+      - 'src/database/schema/**'
+      - 'requirements.txt'
+      - '.github/workflows/data-pipeline.yml'
+
+env:
+  PYTHON_VERSION: '3.11'
+  DATA_DIR: 'data'
+
+jobs:
+  run-etl-pipeline:
+    name: Execute ETL Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hour timeout for complete pipeline
+    
+    steps:
+      # ============================================
+      # STEP 1: Checkout Code
+      # ============================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better git operations
+
+      # ============================================
+      # STEP 2: Set up Python
+      # ============================================
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'  # Cache pip dependencies for faster builds
+
+      # ============================================
+      # STEP 3: Install Dependencies
+      # ============================================
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed successfully"
+
+      # ============================================
+      # STEP 4: Create Data Directories
+      # ============================================
+      - name: Create data directories
+        run: |
+          mkdir -p data/raw/onet
+          mkdir -p data/processed/onet
+          mkdir -p data/processed/ksamds
+          mkdir -p data/embeddings
+          mkdir -p data/validated
+          mkdir -p data/validation
+          mkdir -p data/reports
+          echo "✅ Data directories created"
+
+      # ============================================
+      # STEP 5: Cache O*NET Database
+      # ============================================
+      - name: Cache O*NET database
+        uses: actions/cache@v4
+        with:
+          path: data/raw/onet
+          key: onet-database-${{ hashFiles('data/raw/onet/onet_database.zip') }}
+          restore-keys: |
+            onet-database-
+
+      # ============================================
+      # STEP 6: Cache Embeddings
+      # ============================================
+      - name: Cache embeddings
+        uses: actions/cache@v4
+        with:
+          path: data/embeddings
+          key: embeddings-${{ hashFiles('data/processed/ksamds/*.csv') }}
+          restore-keys: |
+            embeddings-
+
+      # ============================================
+      # STEP 7: Configure Database Connection
+      # ============================================
+      - name: Configure database connection
+        run: |
+          echo "DB_HOST=${{ secrets.DB_HOST }}" >> $GITHUB_ENV
+          echo "DB_PORT=${{ secrets.DB_PORT }}" >> $GITHUB_ENV
+          echo "DB_NAME=${{ secrets.DB_NAME }}" >> $GITHUB_ENV
+          echo "DB_USER=${{ secrets.DB_USER }}" >> $GITHUB_ENV
+          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> $GITHUB_ENV
+          echo "DB_SCHEMA=${{ secrets.DB_SCHEMA }}" >> $GITHUB_ENV
+          echo "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" >> $GITHUB_ENV
+          echo "✅ Environment variables configured"
+
+      # ============================================
+      # STEP 8: Test Database Connection
+      # ============================================
+      - name: Test database connection
+        run: |
+          python -c "
+          import psycopg2
+          import os
+          
+          try:
+              conn = psycopg2.connect(
+                  host=os.environ['DB_HOST'],
+                  port=os.environ['DB_PORT'],
+                  database=os.environ['DB_NAME'],
+                  user=os.environ['DB_USER'],
+                  password=os.environ['DB_PASSWORD']
+              )
+              conn.close()
+              print('✅ Database connection successful')
+          except Exception as e:
+              print(f'❌ Database connection failed: {e}')
+              exit(1)
+          "
+
+      # ============================================
+      # STEP 9: Run ETL Pipeline
+      # ============================================
+      - name: Run O*NET ETL Pipeline
+        id: pipeline
+        run: |
+          echo "Starting KSAMDS ETL Pipeline..."
+          echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo ""
+          
+          # Build command with optional flags
+          CMD="python src/backend/etl/onet_orchestrator.py --data-dir ${{ env.DATA_DIR }}"
+          
+          # Add flags based on workflow inputs (manual trigger)
+          if [[ "${{ github.event.inputs.force_download }}" == "true" ]]; then
+            CMD="$CMD --force-download"
+          fi
+          
+          if [[ "${{ github.event.inputs.skip_extraction }}" == "true" ]]; then
+            CMD="$CMD --skip-extraction"
+          fi
+          
+          if [[ "${{ github.event.inputs.skip_mapping }}" == "true" ]]; then
+            CMD="$CMD --skip-mapping"
+          fi
+          
+          if [[ "${{ github.event.inputs.skip_relationship_inference }}" == "true" ]]; then
+            CMD="$CMD --skip-relationship-inference"
+          fi
+          
+          if [[ "${{ github.event.inputs.skip_loading }}" == "true" ]]; then
+            CMD="$CMD --skip-loading"
+          fi
+          
+          if [[ "${{ github.event.inputs.skip_validation }}" == "true" ]]; then
+            CMD="$CMD --skip-validation"
+          fi
+          
+          # Add database configuration
+          CMD="$CMD --db-host $DB_HOST --db-port $DB_PORT --db-name $DB_NAME"
+          CMD="$CMD --db-user $DB_USER --db-password $DB_PASSWORD --db-schema $DB_SCHEMA"
+          
+          echo "Executing: $CMD"
+          echo ""
+          
+          # Run the pipeline
+          $CMD
+          
+          # Capture exit code
+          PIPELINE_EXIT_CODE=$?
+          
+          if [ $PIPELINE_EXIT_CODE -eq 0 ]; then
+            echo "✅ Pipeline completed successfully"
+            echo "pipeline_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Pipeline failed with exit code $PIPELINE_EXIT_CODE"
+            echo "pipeline_status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      # ============================================
+      # STEP 10: Upload Pipeline Reports
+      # ============================================
+      - name: Upload pipeline execution reports
+        if: always()  # Upload even if pipeline fails
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-reports-${{ github.run_number }}
+          path: |
+            data/reports/*.txt
+            data/reports/*.json
+          retention-days: 30
+
+      # ============================================
+      # STEP 11: Upload Validation Reports
+      # ============================================
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-reports-${{ github.run_number }}
+          path: |
+            data/validation/*.txt
+            data/validation/*.json
+          retention-days: 30
+
+      # ============================================
+      # STEP 12: Upload Pipeline Logs
+      # ============================================
+      - name: Upload pipeline logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_number }}
+          path: |
+            pipeline.log
+          retention-days: 30
+
+      # ============================================
+      # STEP 13: Generate Summary Report
+      # ============================================
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "# KSAMDS ETL Pipeline Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run ID:** ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Number:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show pipeline status
+          if [[ "${{ steps.pipeline.outputs.pipeline_status }}" == "success" ]]; then
+            echo "## ✅ Pipeline Status: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Pipeline Status: FAILURE" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Show latest validation report if exists
+          if [ -f "data/validation/validation_report_latest.txt" ]; then
+            echo "## Validation Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -n 30 data/validation/validation_report_latest.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 View detailed reports in the workflow artifacts" >> $GITHUB_STEP_SUMMARY
+
+      # ============================================
+      # STEP 14: Notify on Failure (Optional)
+      # ============================================
+      - name: Send failure notification
+        if: failure()
+        run: |
+          echo "❌ Pipeline failed!"
+          echo "Check the logs and artifacts for details."
+          # TODO: Add Slack/Email notification here if needed
+
+  # ============================================
+  # JOB 2: Database Statistics (Optional)
+  # ============================================
+  database-statistics:
+    name: Generate Database Statistics
+    needs: run-etl-pipeline
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install psycopg2
+        run: pip install psycopg2-binary
+
+      - name: Generate database statistics
+        run: |
+          python -c "
+          import psycopg2
+          import os
+          
+          conn = psycopg2.connect(
+              host=os.environ['DB_HOST'],
+              port=os.environ['DB_PORT'],
+              database=os.environ['DB_NAME'],
+              user=os.environ['DB_USER'],
+              password=os.environ['DB_PASSWORD']
+          )
+          cursor = conn.cursor()
+          cursor.execute('SET search_path TO ksamds, public')
+          
+          print('# Database Statistics')
+          print('')
+          
+          entities = ['knowledge', 'skill', 'ability', 'occupation', 'task', 'function']
+          for entity in entities:
+              cursor.execute(f'SELECT COUNT(*) FROM {entity}')
+              count = cursor.fetchone()[0]
+              print(f'{entity.capitalize()}: {count:,}')
+          
+          print('')
+          print('# Relationship Counts')
+          relationships = [
+              'occupation_knowledge', 'occupation_skill', 'occupation_ability',
+              'occupation_task', 'occupation_function',
+              'knowledge_skill', 'skill_ability', 'knowledge_function',
+              'ability_task', 'function_task'
+          ]
+          
+          for rel in relationships:
+              cursor.execute(f'SELECT COUNT(*) FROM {rel}')
+              count = cursor.fetchone()[0]
+              print(f'{rel}: {count:,}')
+          
+          conn.close()
+          "
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
