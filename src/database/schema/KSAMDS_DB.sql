@@ -12,57 +12,46 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA ksamds;
 -- Core entities
 -- =========================
 CREATE TABLE IF NOT EXISTS ksamds.knowledge (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name TEXT NOT NULL UNIQUE,
-  definition TEXT,
-  domain TEXT,      
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,    
   source_ref TEXT,          
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.skill (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  definition TEXT,
-  domain TEXT,
   source_ref TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.ability (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  definition TEXT,
-  domain TEXT,
   source_ref TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.function (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  definition TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  source_ref TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.task (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  definition TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  source_ref TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.occupation (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  title TEXT NOT NULL,      -- e.g., "Data Engineer"
+  id UUID PRIMARY KEY,
+  title TEXT NOT NULL UNIQUE,
   description TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  source_ref TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- =========================
@@ -71,59 +60,59 @@ CREATE TABLE IF NOT EXISTS ksamds.occupation (
 -- scope keeps each dimension constrained to the intended anchors
 
 CREATE TABLE IF NOT EXISTS ksamds.type_dim (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   scope TEXT NOT NULL CHECK (scope IN ('K','S','A','T')),
-  name TEXT NOT NULL,
+  name TEXT NOT NULL UNIQUE,
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.level_dim (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   scope TEXT NOT NULL CHECK (scope IN ('K','S','A')),
-  name TEXT NOT NULL,          -- e.g., Basic, Intermediate, Advanced
+  name TEXT NOT NULL UNIQUE,          -- e.g., Basic, Intermediate, Advanced
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.basis_dim (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   scope TEXT NOT NULL CHECK (scope IN ('K','S','A')),
-  name TEXT NOT NULL,          -- e.g., Theory, OJT
+  name TEXT NOT NULL UNIQUE,          -- e.g., Theory, OJT
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.environment_dim (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   scope TEXT NOT NULL CHECK (scope IN ('F','T')),
-  name TEXT NOT NULL,          -- e.g., Office, Outdoor, Lab
+  name TEXT NOT NULL UNIQUE,          -- e.g., Office, Outdoor, Lab
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.mode_dim (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   scope TEXT NOT NULL CHECK (scope IN ('T')),
-  name TEXT NOT NULL,          -- e.g., Tool, Process, Theory
+  name TEXT NOT NULL UNIQUE,          -- e.g., Tool, Process, Theory
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.physicality_dim (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name TEXT NOT NULL,          -- Light, Moderate, Heavy
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,          -- Light, Moderate, Heavy
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.cognitive_dim (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name TEXT NOT NULL,          -- Light, Moderate, Heavy
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,          -- Light, Moderate, Heavy
   description TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.education_level (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name TEXT NOT NULL                 -- e.g., "High school", "Bachelor's", "Master's", "PhD"
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE                 -- e.g., "High school", "Bachelor's", "Master's", "PhD"
 );
 
 CREATE TABLE IF NOT EXISTS ksamds.certification (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY,
   issuer TEXT,                         -- e.g., "AWS"
   name TEXT NOT NULL                  -- e.g., "AWS Solutions Architect – Associate"
 );
@@ -299,9 +288,14 @@ CREATE TABLE IF NOT EXISTS ksamds.ability_task (
 -- =========================
 -- Helpful indexes for fast text search now; pgvector can be added later
 -- =========================
-CREATE INDEX ON ksamds.occupation_skill (occupation_id);
-CREATE INDEX ON ksamds.occupation_knowledge (occupation_id);
-CREATE INDEX ON ksamds.occupation_ability (occupation_id);
-CREATE INDEX ON ksamds.occupation_task (occupation_id);
-CREATE INDEX ON ksamds.occupation_function (occupation_id);
 CREATE INDEX IF NOT EXISTS idx_occ_title_trgm ON ksamds.occupation USING gin (title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_occ_knowledge_occupation ON ksamds.occupation_knowledge(occupation_id);
+CREATE INDEX IF NOT EXISTS idx_occ_knowledge_knowledge ON ksamds.occupation_knowledge(knowledge_id);
+CREATE INDEX IF NOT EXISTS idx_occ_skill_occupation ON ksamds.occupation_skill(occupation_id);
+CREATE INDEX IF NOT EXISTS idx_occ_skill_skill ON ksamds.occupation_skill(skill_id);
+CREATE INDEX IF NOT EXISTS idx_occ_ability_occupation ON ksamds.occupation_ability(occupation_id);
+CREATE INDEX IF NOT EXISTS idx_occ_ability_ability ON ksamds.occupation_ability(ability_id);
+CREATE INDEX IF NOT EXISTS idx_occ_task_occupation ON ksamds.occupation_task(occupation_id);
+CREATE INDEX IF NOT EXISTS idx_occ_task_task ON ksamds.occupation_task(task_id);
+CREATE INDEX IF NOT EXISTS idx_occ_function_occupation ON ksamds.occupation_function(occupation_id);
+CREATE INDEX IF NOT EXISTS idx_occ_function_function ON ksamds.occupation_function(function_id);
