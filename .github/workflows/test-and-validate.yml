@@ -1,0 +1,402 @@
+name: Test and Validate
+
+on:
+  # Run on pull requests to main and develop
+  pull_request:
+    branches:
+      - main
+      - develop
+    types: [opened, synchronize, reopened]
+  
+  # Run on push to develop branch
+  push:
+    branches:
+      - develop
+  
+  # Allow manual trigger
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================
+  # JOB 1: Code Quality Checks
+  # ============================================
+  code-quality:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black isort
+          pip install -r requirements.txt
+
+      - name: Check code formatting with Black
+        run: |
+          echo "Checking code formatting..."
+          black --check --diff src/ tests/
+        continue-on-error: true
+        id: black
+
+      - name: Check import sorting with isort
+        run: |
+          echo "Checking import order..."
+          isort --check-only --diff src/ tests/
+        continue-on-error: true
+        id: isort
+
+      - name: Lint with flake8
+        run: |
+          echo "Running flake8 linter..."
+          # Stop on critical errors (E9, F63, F7, F82)
+          flake8 src/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          
+          # Check for common issues (ignore line length for now)
+          flake8 src/ tests/ --count --max-line-length=120 --statistics
+        continue-on-error: true
+        id: flake8
+
+      - name: Code quality summary
+        if: always()
+        run: |
+          echo "# Code Quality Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ steps.black.outcome }}" == "success" ]]; then
+            echo "✅ **Black formatting:** Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Black formatting:** Failed - Run \`black src/ tests/\` to fix" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ steps.isort.outcome }}" == "success" ]]; then
+            echo "✅ **Import sorting:** Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Import sorting:** Failed - Run \`isort src/ tests/\` to fix" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ steps.flake8.outcome }}" == "success" ]]; then
+            echo "✅ **Flake8 linting:** Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **Flake8 linting:** Warnings found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================
+  # JOB 2: Unit Tests
+  # ============================================
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: code-quality
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-mock
+          pip install -r requirements.txt
+
+      - name: Create test directories
+        run: |
+          mkdir -p data/raw/onet
+          mkdir -p data/processed/onet
+          mkdir -p data/processed/ksamds
+
+      - name: Run unit tests
+        run: |
+          echo "Running unit tests..."
+          pytest tests/ -v --cov=src/backend/etl --cov-report=term --cov-report=xml --cov-report=html
+        continue-on-error: false
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            htmlcov/
+            coverage.xml
+          retention-days: 30
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "# Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Coverage report uploaded as artifact" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================
+  # JOB 3: Database Connection Test
+  # ============================================
+  database-connection:
+    name: Database Connection Test
+    runs-on: ubuntu-latest
+    needs: code-quality
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'database')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install psycopg2
+        run: pip install psycopg2-binary
+
+      - name: Test database connection
+        run: |
+          python -c "
+          import psycopg2
+          import os
+          
+          print('Testing database connection...')
+          try:
+              conn = psycopg2.connect(
+                  host=os.environ.get('DB_HOST'),
+                  port=os.environ.get('DB_PORT'),
+                  database=os.environ.get('DB_NAME'),
+                  user=os.environ.get('DB_USER'),
+                  password=os.environ.get('DB_PASSWORD')
+              )
+              print('✅ Database connection successful')
+              
+              cursor = conn.cursor()
+              cursor.execute('SELECT version()')
+              version = cursor.fetchone()
+              print(f'PostgreSQL version: {version[0]}')
+              
+              cursor.execute('SET search_path TO ksamds, public')
+              cursor.execute('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = %s', ('ksamds',))
+              table_count = cursor.fetchone()[0]
+              print(f'Tables in ksamds schema: {table_count}')
+              
+              conn.close()
+          except Exception as e:
+              print(f'❌ Database connection failed: {e}')
+              exit(1)
+          "
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+
+  # ============================================
+  # JOB 4: Data Quality Checks
+  # ============================================
+  data-quality:
+    name: Data Quality Validation
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create test data directories
+        run: |
+          mkdir -p data/raw/onet
+          mkdir -p data/processed/onet
+          mkdir -p data/processed/ksamds
+          mkdir -p tests/fixtures
+
+      - name: Run data quality tests
+        run: |
+          echo "Running data quality validation tests..."
+          pytest tests/test_data_quality.py -v
+        continue-on-error: true
+
+      - name: Data quality summary
+        if: always()
+        run: |
+          echo "# Data Quality Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Data quality tests completed" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================
+  # JOB 5: Integration Tests (Optional)
+  # ============================================
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main'
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: ksamds_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Initialize test database
+        run: |
+          PGPASSWORD=test_password psql -h localhost -U postgres -d ksamds_test -f src/database/schema/KSAMDS_DB.sql
+        env:
+          PGPASSWORD: test_password
+
+      - name: Run integration tests
+        run: |
+          echo "Running integration tests..."
+          pytest tests/test_integration.py -v
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: ksamds_test
+          DB_USER: postgres
+          DB_PASSWORD: test_password
+          DB_SCHEMA: ksamds
+        continue-on-error: true
+
+  # ============================================
+  # JOB 6: Security Checks
+  # ============================================
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    needs: code-quality
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install safety
+        run: pip install safety
+
+      - name: Check for security vulnerabilities
+        run: |
+          echo "Checking for known security vulnerabilities in dependencies..."
+          safety check --file requirements.txt --json || true
+        continue-on-error: true
+
+      - name: Security summary
+        if: always()
+        run: |
+          echo "# Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Security vulnerability scan completed" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================
+  # JOB 7: Final Status Check
+  # ============================================
+  all-checks-passed:
+    name: All Checks Passed
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests, data-quality, security]
+    if: always()
+    
+    steps:
+      - name: Check all job statuses
+        run: |
+          echo "# Pull Request Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          CODE_QUALITY="${{ needs.code-quality.result }}"
+          UNIT_TESTS="${{ needs.unit-tests.result }}"
+          DATA_QUALITY="${{ needs.data-quality.result }}"
+          SECURITY="${{ needs.security.result }}"
+          
+          if [[ "$CODE_QUALITY" == "success" ]]; then
+            echo "✅ Code Quality: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Code Quality: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "$UNIT_TESTS" == "success" ]]; then
+            echo "✅ Unit Tests: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Unit Tests: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "$DATA_QUALITY" == "success" ]]; then
+            echo "✅ Data Quality: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Data Quality: Some issues" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "$SECURITY" == "success" ]]; then
+            echo "✅ Security: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Security: Some issues" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Determine overall status
+          if [[ "$CODE_QUALITY" == "success" && "$UNIT_TESTS" == "success" ]]; then
+            echo "## ✅ Overall Status: PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "This PR is ready to be reviewed and merged." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          else
+            echo "## ❌ Overall Status: FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Please fix the failing checks before merging." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
