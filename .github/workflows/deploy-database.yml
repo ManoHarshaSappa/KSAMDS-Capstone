@@ -96,6 +96,8 @@ jobs:
         TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
         TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
         AWS_DEFAULT_REGION: us-east-1
+        AWS_SDK_LOAD_CONFIG: 1
+        AWS_DEBUG: true
       run: |
         echo "==================== Terraform Plan Start ==================="
         echo "Starting Terraform plan with debug output..."
@@ -135,10 +137,6 @@ jobs:
         }
         echo "Terraform plan completed successfully"
         echo "============================================================"
-      env:
-        AWS_DEFAULT_REGION: us-east-1
-        AWS_SDK_LOAD_CONFIG: 1
-        AWS_DEBUG: true
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main'
