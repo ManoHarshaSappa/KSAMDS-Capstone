@@ -10,6 +10,7 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+  token  = var.aws_session_token  # Add session token support
 }
 
 # VPC for RDS

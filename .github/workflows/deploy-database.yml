@@ -1,18 +1,28 @@
 name: Deploy Database
 
 on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+        - development
+        - staging
   push:
     branches:
       - main
     paths:
       - 'database/**'
-  workflow_dispatch:
 
 env:
   TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
   TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
 
 jobs:
   deploy:
@@ -44,9 +54,32 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y postgresql-client
 
+    - name: Wait for Database to be ready
+      run: |
+        echo "Waiting for RDS instance to be available..."
+        DB_HOST=$(terraform output -raw db_endpoint)
+        MAX_RETRIES=30
+        RETRY_COUNT=0
+        
+        until pg_isready -h $DB_HOST -U ${{ secrets.DB_USERNAME }}; do
+          RETRY_COUNT=$((RETRY_COUNT+1))
+          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+            echo "Timed out waiting for database to be ready"
+            exit 1
+          fi
+          echo "Database not ready yet, waiting 30 seconds..."
+          sleep 30
+        done
+        
+        echo "Database is ready!"
+
     - name: Initialize Database Schema
-      if: github.ref == 'refs/heads/main'
       run: |
         export PGPASSWORD=${{ secrets.DB_PASSWORD }}
         DB_HOST=$(terraform output -raw db_endpoint)
+        
+        echo "Applying database schema..."
         psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -f ../KSAMDS_DB.sql
+        
+        echo "Verifying schema installation..."
+        psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -c "\dt"

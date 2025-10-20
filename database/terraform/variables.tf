@@ -16,6 +16,12 @@ variable "db_password" {
   sensitive   = true
 }
 
+variable "aws_session_token" {
+  description = "AWS session token for Learner Lab"
+  type        = string
+  sensitive   = true
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 }
