@@ -43,7 +43,26 @@ jobs:
       run: terraform init
 
     - name: Terraform Plan
-      run: terraform plan -out=tfplan
+      run: |
+        echo "Starting Terraform plan with debug output..."
+        export TF_LOG=DEBUG
+        export TF_LOG_PATH=terraform_plan.log
+        
+        # Run plan with timeout
+        timeout 15m terraform plan -out=tfplan -parallelism=20 || {
+          echo "Terraform plan timed out or failed. Checking logs..."
+          if [ -f terraform_plan.log ]; then
+            echo "Last 50 lines of Terraform logs:"
+            tail -n 50 terraform_plan.log
+          fi
+          exit 1
+        }
+      env:
+        # Add AWS default region to speed up API calls
+        AWS_DEFAULT_REGION: us-east-1
+        # Increase AWS SDK logging
+        AWS_SDK_LOAD_CONFIG: 1
+        AWS_DEBUG: true
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main'
