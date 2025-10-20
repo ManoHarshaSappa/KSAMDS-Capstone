@@ -95,7 +95,7 @@ jobs:
         psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -c "SELECT version();"
         
         # Apply schema
-        psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -f ../KSAMDS_DB.sql
+        psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -f ../../src/database/schema/KSAMDS_DB.sql
         
         # Verify installation
         psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -c "\dt"
