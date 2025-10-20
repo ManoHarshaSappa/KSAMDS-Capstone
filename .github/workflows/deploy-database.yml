@@ -17,13 +17,6 @@ on:
     paths:
       - 'database/**'
 
-env:
-  TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
-  TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
-  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
-  AWS_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -46,6 +39,16 @@ jobs:
         echo "============================================================"
 
     - name: Validate Secrets
+      env:
+        AWS_LAB_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
+        AWS_LAB_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
+        AWS_LAB_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
+        TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
+        TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+        # Map AWS credentials to standard AWS environment variables
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
+        AWS_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
       run: |
         echo "=================== Validating Secrets ======================="
         echo "Checking required secrets..."
@@ -86,6 +89,13 @@ jobs:
         echo "============================================================"
 
     - name: Terraform Plan
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
+        AWS_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
+        TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
+        TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+        AWS_DEFAULT_REGION: us-east-1
       run: |
         echo "==================== Terraform Plan Start ==================="
         echo "Starting Terraform plan with debug output..."
