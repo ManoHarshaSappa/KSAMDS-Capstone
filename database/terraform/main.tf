@@ -105,7 +105,7 @@ resource "aws_db_subnet_group" "ksamds" {
 resource "aws_db_instance" "ksamds" {
   identifier           = "ksamds-db"
   engine              = "postgres"
-  engine_version      = "15.3"
+  engine_version      = "17.4"
   instance_class      = "db.t3.micro"  # Free tier eligible
   allocated_storage   = 20
   storage_type        = "gp2"
