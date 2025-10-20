@@ -55,7 +55,6 @@ resource "aws_subnet" "public" {
   vpc_id            = aws_vpc.ksamds_vpc.id
   cidr_block        = "10.0.${count.index + 1}.0/24"
   availability_zone = data.aws_availability_zones.available.names[count.index]
-  # Enable auto-assign public IP
   map_public_ip_on_launch = true
 
   tags = {
@@ -81,13 +80,6 @@ resource "aws_security_group" "rds_sg" {
     to_port     = 5432
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]  # In production, restrict this to specific IPs
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
@@ -119,10 +111,6 @@ resource "aws_db_instance" "ksamds" {
   
   skip_final_snapshot    = true  # For development; set to false in production
   publicly_accessible    = true  # For development; set to false in production
-  
-  backup_retention_period = 7
-  backup_window          = "03:00-04:00"
-  maintenance_window     = "Mon:04:00-Mon:05:00"
 
   tags = {
     Environment = "development"
