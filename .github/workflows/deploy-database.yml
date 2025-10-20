@@ -32,73 +32,197 @@ jobs:
         working-directory: ./database/terraform
 
     steps:
-    - uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Print Environment Info
+      run: |
+        echo "=================== Environment Information ==================="
+        echo "GitHub Ref: ${{ github.ref }}"
+        echo "GitHub Event Name: ${{ github.event_name }}"
+        echo "Working Directory: $(pwd)"
+        echo "Repository: ${{ github.repository }}"
+        echo "Branch: ${{ github.ref_name }}"
+        echo "============================================================"
+
+    - name: Validate Secrets
+      run: |
+        echo "=================== Validating Secrets ======================="
+        echo "Checking required secrets..."
+        [ ! -z "$AWS_LAB_ACCESS_KEY_ID" ] && echo "✅ AWS_LAB_ACCESS_KEY_ID is set" || { echo "❌ AWS_LAB_ACCESS_KEY_ID is missing" && exit 1; }
+        [ ! -z "$AWS_LAB_SECRET_ACCESS_KEY" ] && echo "✅ AWS_LAB_SECRET_ACCESS_KEY is set" || { echo "❌ AWS_LAB_SECRET_ACCESS_KEY is missing" && exit 1; }
+        [ ! -z "$AWS_LAB_SESSION_TOKEN" ] && echo "✅ AWS_LAB_SESSION_TOKEN is set" || { echo "❌ AWS_LAB_SESSION_TOKEN is missing" && exit 1; }
+        [ ! -z "$TF_VAR_db_username" ] && echo "✅ DB_USERNAME is set" || { echo "❌ DB_USERNAME is missing" && exit 1; }
+        [ ! -z "$TF_VAR_db_password" ] && echo "✅ DB_PASSWORD is set" || { echo "❌ DB_PASSWORD is missing" && exit 1; }
+        echo "All required secrets are available"
+        echo "============================================================"
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: 1.5.7
 
+    - name: Verify AWS Credentials
+      run: |
+        echo "================= Verifying AWS Credentials ================="
+        echo "Checking AWS CLI configuration..."
+        aws sts get-caller-identity || {
+          echo "❌ Failed to verify AWS credentials"
+          exit 1
+        }
+        echo "AWS Region: ${AWS_DEFAULT_REGION:-not set}"
+        echo "============================================================"
+
     - name: Terraform Init
-      run: terraform init
+      run: |
+        echo "=================== Terraform Init Start ===================="
+        echo "Terraform Version:"
+        terraform version
+        echo "Directory Contents:"
+        ls -la
+        echo "Starting terraform init..."
+        terraform init
+        echo "Terraform initialization complete"
+        echo "============================================================"
 
     - name: Terraform Plan
       run: |
+        echo "==================== Terraform Plan Start ==================="
         echo "Starting Terraform plan with debug output..."
+        echo "Workspace: $(terraform workspace show)"
+        echo "Current working directory: $(pwd)"
+        echo "Directory contents:"
+        ls -la
+        
+        # Save Terraform and provider versions for debugging
+        echo "Terraform and Provider Versions:"
+        terraform version
+        
         export TF_LOG=DEBUG
         export TF_LOG_PATH=terraform_plan.log
         
-        # Run plan with timeout
+        echo "Running terraform plan with timeout..."
         timeout 15m terraform plan -out=tfplan -parallelism=20 || {
-          echo "Terraform plan timed out or failed. Checking logs..."
+          echo "⚠️ Terraform plan timed out or failed!"
+          echo "================== Terraform Plan Logs ==================="
           if [ -f terraform_plan.log ]; then
-            echo "Last 50 lines of Terraform logs:"
-            tail -n 50 terraform_plan.log
+            echo "Last 100 lines of Terraform logs:"
+            tail -n 100 terraform_plan.log
+            echo "AWS Provider Errors (if any):"
+            grep -A 5 -B 5 "aws_" terraform_plan.log | grep -A 5 -B 5 "Error"
+            echo "Full logs saved to: terraform_plan.log"
+            
+            # Check for common issues
+            echo "Checking for common issues..."
+            grep -i "timeout" terraform_plan.log || true
+            grep -i "connection refused" terraform_plan.log || true
+            grep -i "access denied" terraform_plan.log || true
+          else
+            echo "No terraform log file found!"
           fi
+          echo "========================================================="
           exit 1
         }
+        echo "Terraform plan completed successfully"
+        echo "============================================================"
       env:
-        # Add AWS default region to speed up API calls
         AWS_DEFAULT_REGION: us-east-1
-        # Increase AWS SDK logging
         AWS_SDK_LOAD_CONFIG: 1
         AWS_DEBUG: true
 
     - name: Terraform Apply
       if: github.ref == 'refs/heads/main'
-      run: terraform apply -auto-approve tfplan
+      run: |
+        echo "==================== Terraform Apply Start =================="
+        echo "Starting Terraform apply..."
+        
+        export TF_LOG=DEBUG
+        export TF_LOG_PATH=terraform_apply.log
+        
+        terraform apply -auto-approve tfplan || {
+          echo "⚠️ Terraform apply failed!"
+          echo "================== Terraform Apply Logs =================="
+          if [ -f terraform_apply.log ]; then
+            echo "Last 100 lines of Terraform logs:"
+            tail -n 100 terraform_apply.log
+            echo "AWS Provider Errors (if any):"
+            grep -A 5 -B 5 "aws_" terraform_apply.log | grep -A 5 -B 5 "Error"
+          fi
+          echo "======================================================="
+          exit 1
+        }
+        
+        echo "Terraform apply completed successfully"
+        echo "Resources created:"
+        terraform show
+        echo "============================================================"
 
     - name: Setup PostgreSQL Client
       run: |
+        echo "================= Installing PostgreSQL Client ================"
+        echo "Updating package lists..."
         sudo apt-get update
+        echo "Installing postgresql-client..."
         sudo apt-get install -y postgresql-client
+        echo "PostgreSQL client version:"
+        psql --version
+        echo "============================================================"
 
     - name: Wait for Database to be ready
       run: |
-        echo "Waiting for RDS instance to be available..."
+        echo "================= Waiting for RDS Instance =================="
+        echo "Getting RDS endpoint..."
         DB_HOST=$(terraform output -raw db_endpoint)
+        echo "RDS Host: $DB_HOST"
+        
         MAX_RETRIES=30
         RETRY_COUNT=0
         
         until pg_isready -h $DB_HOST -U ${{ secrets.DB_USERNAME }}; do
           RETRY_COUNT=$((RETRY_COUNT+1))
           if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-            echo "Timed out waiting for database to be ready"
+            echo "❌ Timed out waiting for database to be ready after $((RETRY_COUNT * 30)) seconds"
             exit 1
           fi
-          echo "Database not ready yet, waiting 30 seconds..."
+          echo "Attempt $RETRY_COUNT of $MAX_RETRIES: Database not ready, waiting 30 seconds..."
           sleep 30
         done
         
-        echo "Database is ready!"
+        echo "✅ Database is ready and accepting connections!"
+        echo "============================================================"
 
     - name: Initialize Database Schema
       run: |
+        echo "================= Initializing Database Schema =============="
+        echo "Setting up database connection..."
         export PGPASSWORD=${{ secrets.DB_PASSWORD }}
         DB_HOST=$(terraform output -raw db_endpoint)
+        echo "RDS Host: $DB_HOST"
+        
+        echo "Testing database connection..."
+        if psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -c "SELECT version();" > /dev/null 2>&1; then
+          echo "✅ Database connection successful"
+        else
+          echo "❌ Failed to connect to database"
+          exit 1
+        fi
         
         echo "Applying database schema..."
-        psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -f ../KSAMDS_DB.sql
+        if psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -f ../KSAMDS_DB.sql; then
+          echo "✅ Schema applied successfully"
+        else
+          echo "❌ Failed to apply schema"
+          exit 1
+        fi
         
         echo "Verifying schema installation..."
+        echo "Tables in database:"
         psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -c "\dt"
+        
+        echo "Checking core tables..."
+        psql -h $DB_HOST -U ${{ secrets.DB_USERNAME }} -d ksamds -c "
+          SELECT table_name, (SELECT count(*) FROM information_schema.columns WHERE table_name = t.table_name) as column_count 
+          FROM information_schema.tables t 
+          WHERE table_schema = 'ksamds'
+          ORDER BY table_name;"
+        echo "============================================================"
