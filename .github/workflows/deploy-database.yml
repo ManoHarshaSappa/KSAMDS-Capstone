@@ -38,34 +38,17 @@ jobs:
         echo "Branch: ${{ github.ref_name }}"
         echo "============================================================"
 
-    - name: Validate Secrets
-      env:
-        AWS_LAB_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
-        AWS_LAB_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
-        AWS_LAB_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
-        TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
-        TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-        # Map AWS credentials to standard AWS environment variables
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
-        AWS_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
-      run: |
-        echo "=================== Validating Secrets ======================="
-        echo "Checking required secrets..."
-        [ ! -z "$AWS_LAB_ACCESS_KEY_ID" ] && echo "✅ AWS_LAB_ACCESS_KEY_ID is set" || { echo "❌ AWS_LAB_ACCESS_KEY_ID is missing" && exit 1; }
-        [ ! -z "$AWS_LAB_SECRET_ACCESS_KEY" ] && echo "✅ AWS_LAB_SECRET_ACCESS_KEY is set" || { echo "❌ AWS_LAB_SECRET_ACCESS_KEY is missing" && exit 1; }
-        [ ! -z "$AWS_LAB_SESSION_TOKEN" ] && echo "✅ AWS_LAB_SESSION_TOKEN is set" || { echo "❌ AWS_LAB_SESSION_TOKEN is missing" && exit 1; }
-        [ ! -z "$TF_VAR_db_username" ] && echo "✅ DB_USERNAME is set" || { echo "❌ DB_USERNAME is missing" && exit 1; }
-        [ ! -z "$TF_VAR_db_password" ] && echo "✅ DB_PASSWORD is set" || { echo "❌ DB_PASSWORD is missing" && exit 1; }
-        echo "All required secrets are available"
-        echo "============================================================"
-
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: 1.5.7
 
     - name: Verify AWS Credentials
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_LAB_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_LAB_SECRET_ACCESS_KEY }}
+        AWS_SESSION_TOKEN: ${{ secrets.AWS_LAB_SESSION_TOKEN }}
+        AWS_DEFAULT_REGION: us-east-1
       run: |
         echo "================= Verifying AWS Credentials ================="
         echo "Checking AWS CLI configuration..."
