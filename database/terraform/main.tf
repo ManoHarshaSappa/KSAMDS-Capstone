@@ -26,16 +26,48 @@ resource "aws_vpc" "ksamds_vpc" {
   }
 }
 
+# Internet Gateway
+resource "aws_internet_gateway" "ksamds_igw" {
+  vpc_id = aws_vpc.ksamds_vpc.id
+
+  tags = {
+    Name = "ksamds-igw"
+  }
+}
+
+# Route table for public subnets
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.ksamds_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.ksamds_igw.id
+  }
+
+  tags = {
+    Name = "ksamds-public-rt"
+  }
+}
+
 # Public subnet
 resource "aws_subnet" "public" {
   count             = 2
   vpc_id            = aws_vpc.ksamds_vpc.id
   cidr_block        = "10.0.${count.index + 1}.0/24"
   availability_zone = data.aws_availability_zones.available.names[count.index]
+  # Enable auto-assign public IP
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "ksamds-public-subnet-${count.index + 1}"
   }
+}
+
+# Associate public subnets with public route table
+resource "aws_route_table_association" "public" {
+  count          = 2
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
 }
 
 # Security group for RDS
