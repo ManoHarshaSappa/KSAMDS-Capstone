@@ -1,0 +1,18 @@
+# Database Connectivity
+psycopg2-binary==2.9.11  # PostgreSQL adapter (onet_loader.py, onet_validator.py)
+
+# Core Data Processing
+pandas==2.3.3  # Data manipulation and analysis (all modules)
+numpy==2.3.4  # Numerical computing (similarity_calculator.py, embedding_generator.py)
+scikit-learn==1.7.2  # Cosine similarity calculations (similarity_calculator.py)
+
+# File Handling & HTTP
+requests==2.32.5  # HTTP downloads (onet_extractor.py)
+openpyxl==3.1.5  # Excel file reading (onet_extractor.py via pandas)
+
+# AI & Embeddings
+google-generativeai  # Google AI embeddings (embedding_generator.py)
+
+# Text Processing
+fuzzywuzzy==0.18.0  # String similarity matching (onet_mapper.py)
+python-Levenshtein==0.27.3  # Faster string calculations (accelerates fuzzywuzzy)
