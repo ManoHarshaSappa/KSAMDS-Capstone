@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KSAMDS - Occupation Explorer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Top brand bar -->
+  <div class="brandbar">
+    <div class="brandbar__inner">
+      <img class="brandbar__img-left" src="logo.jpg" alt="KSAMDS Logo">
+    </div>
+  </div>
+
+  <!-- Page title -->
+  <h1 class="page-title">Occupation Explorer</h1>
+
+  <!-- Search + filter pills -->
+  <header class="topbar">
+    <div class="search-wrap">
+      <input type="text" id="search" placeholder="Search occupations, knowledge, skills..." aria-label="Search input" />
+      <span class="search-hint" aria-hidden="true">/</span>
+
+      <!-- Autocomplete Dropdown (NEW) -->
+      <div class="autocomplete-dropdown" id="autocomplete-dropdown" style="display: none;">
+        <div class="autocomplete-loading" id="autocomplete-loading" style="display: none;">
+          Searching...
+        </div>
+        <ul class="autocomplete-list" id="autocomplete-list"></ul>
+        <div class="autocomplete-empty" id="autocomplete-empty" style="display: none;">
+          No occupations found
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge Filter -->
+    <details class="dd" data-filter="knowledge">
+      <summary class="pill" aria-haspopup="listbox">
+        Knowledge ▾
+        <span class="badge" style="display:none;">0</span>
+      </summary>
+      <div class="panel" role="dialog" aria-label="Select knowledge dimensions">
+        <div class="panel__search">
+          <input type="text" class="dimension-search" placeholder="Search dimensions..." aria-label="Search knowledge">
+        </div>
+        <div class="panel__dimensions">
+          <!-- Domain dimension -->
+          <div class="dimension-group" data-dimension="domain">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Domain</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Data Engineering"><span class="item-name">Data Engineering</span></label></li>
+              <li><label><input type="checkbox" value="Cybersecurity"><span class="item-name">Cybersecurity</span></label></li>
+              <li><label><input type="checkbox" value="Mathematics"><span class="item-name">Mathematics</span></label></li>
+              <li><label><input type="checkbox" value="Business Analytics"><span class="item-name">Business Analytics</span></label></li>
+              <li><label><input type="checkbox" value="Business Analytics"><span class="item-name">Business Analytics</span></label></li>
+              <li><label><input type="checkbox" value="Business Analytics"><span class="item-name">Business Analytics</span></label></li>
+              <li><label><input type="checkbox" value="Business Analytics"><span class="item-name">Business Analytics</span></label></li>
+              <li><label><input type="checkbox" value="Business Analytics"><span class="item-name">Test</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Type dimension -->
+          <div class="dimension-group" data-dimension="type">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Type</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Technical"><span class="item-name">Technical</span></label></li>
+              <li><label><input type="checkbox" value="Theoretical"><span class="item-name">Theoretical</span></label></li>
+              <li><label><input type="checkbox" value="Practical"><span class="item-name">Practical</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Level dimension -->
+          <div class="dimension-group" data-dimension="level">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Level</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Basic"><span class="item-name">Basic</span></label></li>
+              <li><label><input type="checkbox" value="Intermediate"><span class="item-name">Intermediate</span></label></li>
+              <li><label><input type="checkbox" value="Advanced"><span class="item-name">Advanced</span></label></li>
+              <li><label><input type="checkbox" value="Expert"><span class="item-name">Expert</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Basis dimension -->
+          <div class="dimension-group" data-dimension="basis">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Basis</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Formal Education"><span class="item-name">Formal Education</span></label></li>
+              <li><label><input type="checkbox" value="On-the-Job Training"><span class="item-name">On-the-Job Training</span></label></li>
+              <li><label><input type="checkbox" value="Self-Taught"><span class="item-name">Self-Taught</span></label></li>
+              <li><label><input type="checkbox" value="Certification"><span class="item-name">Certification</span></label></li>
+            </ul>
+          </div>
+        </div>
+        <div class="panel__footer">
+          <span class="panel__footer-left"><span class="total-selected">0</span> selected</span>
+          <div>
+            <button class="btn btn--ghost clear-btn" type="button">Clear</button>
+            <button class="btn btn--primary apply-btn" type="button">Apply Filters</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Skills Filter -->
+    <details class="dd" data-filter="skills">
+      <summary class="pill" aria-haspopup="listbox">
+        Skills ▾
+        <span class="badge" style="display:none;">0</span>
+      </summary>
+      <div class="panel" role="dialog" aria-label="Select skills dimensions">
+        <div class="panel__search">
+          <input type="text" class="dimension-search" placeholder="Search dimensions..." aria-label="Search skills">
+        </div>
+        <div class="panel__dimensions">
+          <!-- Type dimension -->
+          <div class="dimension-group" data-dimension="type">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Type</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Hard Skills"><span class="item-name">Hard Skills</span></label></li>
+              <li><label><input type="checkbox" value="Soft Skills"><span class="item-name">Soft Skills</span></label></li>
+              <li><label><input type="checkbox" value="Technical Skills"><span class="item-name">Technical Skills</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Level dimension -->
+          <div class="dimension-group" data-dimension="level">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Level</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Novice"><span class="item-name">Novice</span></label></li>
+              <li><label><input type="checkbox" value="Proficient"><span class="item-name">Proficient</span></label></li>
+              <li><label><input type="checkbox" value="Expert"><span class="item-name">Expert</span></label></li>
+              <li><label><input type="checkbox" value="Master"><span class="item-name">Master</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Basis dimension -->
+          <div class="dimension-group" data-dimension="basis">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Basis</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Experience-Based"><span class="item-name">Experience-Based</span></label></li>
+              <li><label><input type="checkbox" value="Certification-Based"><span class="item-name">Certification-Based</span></label></li>
+              <li><label><input type="checkbox" value="Practice-Based"><span class="item-name">Practice-Based</span></label></li>
+            </ul>
+          </div>
+        </div>
+        <div class="panel__footer">
+          <span class="panel__footer-left"><span class="total-selected">0</span> selected</span>
+          <div>
+            <button class="btn btn--ghost clear-btn" type="button">Clear</button>
+            <button class="btn btn--primary apply-btn" type="button">Apply Filters</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Abilities Filter -->
+    <details class="dd" data-filter="abilities">
+      <summary class="pill" aria-haspopup="listbox">
+        Abilities ▾
+        <span class="badge" style="display:none;">0</span>
+      </summary>
+      <div class="panel" role="dialog" aria-label="Select abilities dimensions">
+        <div class="panel__search">
+          <input type="text" class="dimension-search" placeholder="Search dimensions..." aria-label="Search abilities">
+        </div>
+        <div class="panel__dimensions">
+          <!-- Type dimension -->
+          <div class="dimension-group" data-dimension="type">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Type</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Cognitive"><span class="item-name">Cognitive</span></label></li>
+              <li><label><input type="checkbox" value="Physical"><span class="item-name">Physical</span></label></li>
+              <li><label><input type="checkbox" value="Sensory"><span class="item-name">Sensory</span></label></li>
+              <li><label><input type="checkbox" value="Psychomotor"><span class="item-name">Psychomotor</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Level dimension -->
+          <div class="dimension-group" data-dimension="level">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Level</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Low"><span class="item-name">Low</span></label></li>
+              <li><label><input type="checkbox" value="Moderate"><span class="item-name">Moderate</span></label></li>
+              <li><label><input type="checkbox" value="High"><span class="item-name">High</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Basis dimension -->
+          <div class="dimension-group" data-dimension="basis">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Basis</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Innate"><span class="item-name">Innate</span></label></li>
+              <li><label><input type="checkbox" value="Developed"><span class="item-name">Developed</span></label></li>
+              <li><label><input type="checkbox" value="Trainable"><span class="item-name">Trainable</span></label></li>
+            </ul>
+          </div>
+        </div>
+        <div class="panel__footer">
+          <span class="panel__footer-left"><span class="total-selected">0</span> selected</span>
+          <div>
+            <button class="btn btn--ghost clear-btn" type="button">Clear</button>
+            <button class="btn btn--primary apply-btn" type="button">Apply Filters</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Functions Filter -->
+    <details class="dd" data-filter="functions">
+      <summary class="pill" aria-haspopup="listbox">
+        Functions ▾
+        <span class="badge" style="display:none;">0</span>
+      </summary>
+      <div class="panel" role="dialog" aria-label="Select functions dimensions">
+        <div class="panel__search">
+          <input type="text" class="dimension-search" placeholder="Search dimensions..." aria-label="Search functions">
+        </div>
+        <div class="panel__dimensions">
+          <!-- Environment dimension -->
+          <div class="dimension-group" data-dimension="environment">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Environment</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Office"><span class="item-name">Office</span></label></li>
+              <li><label><input type="checkbox" value="Remote"><span class="item-name">Remote</span></label></li>
+              <li><label><input type="checkbox" value="Outdoor"><span class="item-name">Outdoor</span></label></li>
+              <li><label><input type="checkbox" value="Laboratory"><span class="item-name">Laboratory</span></label></li>
+              <li><label><input type="checkbox" value="Field"><span class="item-name">Field</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Physicality dimension -->
+          <div class="dimension-group" data-dimension="physicality">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Physicality</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Light"><span class="item-name">Light</span></label></li>
+              <li><label><input type="checkbox" value="Moderate"><span class="item-name">Moderate</span></label></li>
+              <li><label><input type="checkbox" value="Heavy"><span class="item-name">Heavy</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Cognitive Load dimension -->
+          <div class="dimension-group" data-dimension="cognitive">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Cognitive Load</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Light"><span class="item-name">Light</span></label></li>
+              <li><label><input type="checkbox" value="Moderate"><span class="item-name">Moderate</span></label></li>
+              <li><label><input type="checkbox" value="Heavy"><span class="item-name">Heavy</span></label></li>
+            </ul>
+          </div>
+        </div>
+        <div class="panel__footer">
+          <span class="panel__footer-left"><span class="total-selected">0</span> selected</span>
+          <div>
+            <button class="btn btn--ghost clear-btn" type="button">Clear</button>
+            <button class="btn btn--primary apply-btn" type="button">Apply Filters</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Tasks Filter -->
+    <details class="dd" data-filter="tasks">
+      <summary class="pill" aria-haspopup="listbox">
+        Tasks ▾
+        <span class="badge" style="display:none;">0</span>
+      </summary>
+      <div class="panel" role="dialog" aria-label="Select tasks dimensions">
+        <div class="panel__search">
+          <input type="text" class="dimension-search" placeholder="Search dimensions..." aria-label="Search tasks">
+        </div>
+        <div class="panel__dimensions">
+          <!-- Type dimension -->
+          <div class="dimension-group" data-dimension="type">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Type</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Routine"><span class="item-name">Routine</span></label></li>
+              <li><label><input type="checkbox" value="Complex"><span class="item-name">Complex</span></label></li>
+              <li><label><input type="checkbox" value="Creative"><span class="item-name">Creative</span></label></li>
+              <li><label><input type="checkbox" value="Analytical"><span class="item-name">Analytical</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Environment dimension -->
+          <div class="dimension-group" data-dimension="environment">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Environment</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Office"><span class="item-name">Office</span></label></li>
+              <li><label><input type="checkbox" value="Remote"><span class="item-name">Remote</span></label></li>
+              <li><label><input type="checkbox" value="Field"><span class="item-name">Field</span></label></li>
+              <li><label><input type="checkbox" value="Client Site"><span class="item-name">Client Site</span></label></li>
+            </ul>
+          </div>
+
+          <!-- Mode dimension -->
+          <div class="dimension-group" data-dimension="mode">
+            <div class="dimension-header">
+              <div class="dimension-header__title">
+                <span>Mode</span>
+                <span class="dimension-header__count">0</span>
+              </div>
+              <svg class="dimension-header__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </div>
+            <ul class="dimension-items">
+              <li><label><input type="checkbox" value="Tool-Based"><span class="item-name">Tool-Based</span></label></li>
+              <li><label><input type="checkbox" value="Process-Based"><span class="item-name">Process-Based</span></label></li>
+              <li><label><input type="checkbox" value="Theory-Based"><span class="item-name">Theory-Based</span></label></li>
+              <li><label><input type="checkbox" value="Manual"><span class="item-name">Manual</span></label></li>
+            </ul>
+          </div>
+        </div>
+        <div class="panel__footer">
+          <span class="panel__footer-left"><span class="total-selected">0</span> selected</span>
+          <div>
+            <button class="btn btn--ghost clear-btn" type="button">Clear</button>
+            <button class="btn btn--primary apply-btn" type="button">Apply Filters</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Search icon button -->
+    <button class="icon-btn" aria-label="Execute search">
+      <svg class="icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"></circle>
+        <line x1="16.65" y1="16.65" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"></line>
+      </svg>
+    </button>
+  </header>
+
+  <!-- Occupation Info Section (NEW) -->
+  <div class="occupation-info" id="occupation-info" style="display: none;">
+    <div class="occupation-info__content">
+      <h2 class="occupation-info__title" id="occupation-title"></h2>
+      <p class="occupation-info__description" id="occupation-description"></p>
+    </div>
+  </div>
+
+  <!-- Five content sections -->
+  <main class="wrap">
+    <section class="block">
+      <h2>Knowledge<span class="count-badge">0</span></h2>
+      <div class="content-box" id="knowledge-box">
+        <div class="empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <line x1="16.65" y1="16.65" x2="21" y2="21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></line>
+          </svg>
+          <div>No knowledge items yet. Use filters above to explore.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>Skills<span class="count-badge">0</span></h2>
+      <div class="content-box" id="skills-box">
+        <div class="empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <line x1="16.65" y1="16.65" x2="21" y2="21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></line>
+          </svg>
+          <div>No skills yet. Use filters above to explore.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>Abilities<span class="count-badge">0</span></h2>
+      <div class="content-box" id="abilities-box">
+        <div class="empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <line x1="16.65" y1="16.65" x2="21" y2="21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></line>
+          </svg>
+          <div>No abilities yet. Use filters above to explore.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>Functions<span class="count-badge">0</span></h2>
+      <div class="content-box" id="functions-box">
+        <div class="empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <line x1="16.65" y1="16.65" x2="21" y2="21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></line>
+          </svg>
+          <div>No functions yet. Use filters above to explore.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>Tasks<span class="count-badge">0</span></h2>
+      <div class="content-box" id="tasks-box">
+        <div class="empty">
+          <svg width="36" height="36" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+            <line x1="16.65" y1="16.65" x2="21" y2="21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></line>
+          </svg>
+          <div>No tasks yet. Use filters above to explore.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal-overlay" id="relationship-modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="modal-entity-name"></h2>
+        <button class="modal-close" id="modal-close" aria-label="Close modal">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <div class="modal-loading">Loading relationships...</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
