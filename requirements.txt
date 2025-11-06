@@ -1,4 +1,11 @@
+# Web Framework & API
+fastapi==0.121.0  # FastAPI web framework (main.py, routers/*.py)
+uvicorn==0.38.0  # ASGI server for FastAPI (main.py)
+pydantic==2.12.4  # Data validation and settings (models/schemas.py)
+pydantic-settings==2.11.0  # Settings management (config.py)
+
 # Database Connectivity
+SQLAlchemy==2.0.44  # SQL toolkit and ORM (database.py, services/*.py)
 psycopg2-binary==2.9.11  # PostgreSQL adapter (onet_loader.py, onet_validator.py)
 
 # Core Data Processing
@@ -11,7 +18,7 @@ requests==2.32.5  # HTTP downloads (onet_extractor.py)
 openpyxl==3.1.5  # Excel file reading (onet_extractor.py via pandas)
 
 # AI & Embeddings
-google-generativeai  # Google AI embeddings (embedding_generator.py)
+google-generativeai==0.8.5  # Google AI embeddings (embedding_generator.py)
 
 # Text Processing
 fuzzywuzzy==0.18.0  # String similarity matching (onet_mapper.py)
