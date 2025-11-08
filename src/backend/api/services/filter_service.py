@@ -117,7 +117,8 @@ def get_dimension_options(
     entity_type: str
 ) -> List[DimensionOption]:
     """
-    Get all options for a dimension (without counts)
+    Get all options for a dimension that are actually used by entities
+    Only returns dimension values that have been assigned to at least one entity
 
     Args:
         db: Database session
@@ -130,21 +131,34 @@ def get_dimension_options(
     dim_meta = DIMENSION_CONFIG[dimension_name]
     entity_config = ENTITY_CONFIG[entity_type]
     entity_scope = entity_config["scope"]
+    entity_table = entity_config["table"]
 
     # Get dimension table name
     dim_table = dim_meta.table_name
 
+    # Get junction table name
+    junction_table = get_junction_table_name(entity_type, dimension_name)
+
+    # Determine the foreign key column name in the junction table
+    if dimension_name == "environment":
+        dimension_fk = "env_id"
+    else:
+        dimension_fk = f"{dimension_name}_id"
+
     # Special handling for physicality and cognitive (no scope filter)
     if dimension_name in ["physicality", "cognitive"]:
         query = f"""
-            SELECT d.id, d.name
+            SELECT DISTINCT d.id, d.name
             FROM {dim_table} d
+            INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
             ORDER BY d.name
         """
     else:
+        # Query only dimension values that are actually used and match the scope
         query = f"""
-            SELECT d.id, d.name
+            SELECT DISTINCT d.id, d.name
             FROM {dim_table} d
+            INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
             WHERE d.scope = :scope
             ORDER BY d.name
         """
@@ -281,14 +295,30 @@ def validate_filter_values(
             )
             continue
 
-        # Get valid values from database
+        # Get valid values from database (only values actually in use)
         dim_table = dim_meta.table_name
+        junction_table = get_junction_table_name(entity_type, dim_name)
+
+        # Determine the foreign key column name in the junction table
+        if dim_name == "environment":
+            dimension_fk = "env_id"
+        else:
+            dimension_fk = f"{dim_name}_id"
 
         if dim_name in ["physicality", "cognitive"]:
-            query = f"SELECT name FROM {dim_table}"
+            query = f"""
+                SELECT DISTINCT d.name 
+                FROM {dim_table} d
+                INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
+            """
             valid_values = [row["name"] for row in fetch_all(db, query)]
         else:
-            query = f"SELECT name FROM {dim_table} WHERE scope = :scope"
+            query = f"""
+                SELECT DISTINCT d.name 
+                FROM {dim_table} d
+                INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
+                WHERE d.scope = :scope
+            """
             valid_values = [
                 row["name"]
                 for row in fetch_all(db, query, {"scope": entity_scope})
