@@ -29,35 +29,58 @@ from onet_loader import ONetLoader, DatabaseConfig
 from onet_validator import ONetValidator
 from onet_relations import ONetRelationshipBuilder
 
-# Get project root and setup log directory
-project_root = Path(__file__).parent.parent.parent.parent
-logs_dir = project_root / "data" / "logs"
-logs_dir.mkdir(parents=True, exist_ok=True)
 
-# Get timestamp for log filename
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-log_file = logs_dir / f"pipeline_{timestamp}.log"
-latest_log = logs_dir / "pipeline_latest.log"
+def setup_logging():
+    """
+    Configure logging for the pipeline.
 
-# Configure logging with both file and console output
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(
-            log_file,
-            mode='w',
-            encoding='utf-8'
-        ),
-        logging.FileHandler(
-            latest_log,
-            mode='w',
-            encoding='utf-8'
-        )
-    ]
-)
-logger = logging.getLogger(__name__)
+    Returns:
+        tuple: (logger, log_file_path, latest_log_path)
+    """
+    # Get project root and setup log directory
+    project_root = Path(__file__).parent.parent.parent.parent
+    logs_dir = project_root / "data" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get timestamp for log filename
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = logs_dir / f"pipeline_{timestamp}.log"
+    latest_log = logs_dir / "pipeline_latest.log"
+
+    # Create handlers with explicit flushing
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+
+    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+
+    latest_handler = logging.FileHandler(
+        latest_log, mode='w', encoding='utf-8')
+    latest_handler.setLevel(logging.INFO)
+
+    # Create formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(formatter)
+    file_handler.setFormatter(formatter)
+    latest_handler.setFormatter(formatter)
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Remove any existing handlers to avoid duplicates
+    root_logger.handlers.clear()
+
+    # Add handlers
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(latest_handler)
+
+    # Get module logger
+    logger = logging.getLogger(__name__)
+
+    return logger, log_file, latest_log
 
 
 @dataclass
@@ -100,6 +123,9 @@ class PipelineOrchestrator:
         self.start_time = None
         self.end_time = None
 
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+
         # Initialize components
         self.extractor = None
         self.mapper = None
@@ -115,22 +141,22 @@ class PipelineOrchestrator:
         self.reports_dir = self.data_dir / "reports"
         self.temp_dir = self.data_dir / "temp"
 
-        logger.info(f"PipelineOrchestrator initialized")
-        logger.info(f"Data directory: {self.data_dir}")
-        logger.info(f"Archive directory: {self.archive_dir}")
-        logger.info(f"Reports directory: {self.reports_dir}")
+        self.logger.info(f"PipelineOrchestrator initialized")
+        self.logger.info(f"Data directory: {self.data_dir}")
+        self.logger.info(f"Archive directory: {self.archive_dir}")
+        self.logger.info(f"Reports directory: {self.reports_dir}")
 
     def log_stage_start(self, stage: str):
         """Log the start of a pipeline stage."""
-        logger.info("=" * 80)
-        logger.info(f"STAGE: {stage}")
-        logger.info("=" * 80)
+        self.logger.info("=" * 80)
+        self.logger.info(f"STAGE: {stage}")
+        self.logger.info("=" * 80)
 
     def log_stage_complete(self, stage: str, duration: float, success: bool):
         """Log the completion of a pipeline stage."""
         status = "COMPLETED" if success else "FAILED"
-        logger.info(f"{stage} {status} in {duration:.2f} seconds")
-        logger.info("")
+        self.logger.info(f"{stage} {status} in {duration:.2f} seconds")
+        self.logger.info("")
 
     def run_extraction(self) -> PipelineResult:
         """Run the extraction stage."""
@@ -167,7 +193,7 @@ class PipelineOrchestrator:
 
         except Exception as e:
             duration = time.time() - start
-            logger.error(f"Extraction failed: {e}", exc_info=True)
+            self.logger.error(f"Extraction failed: {e}", exc_info=True)
             result = PipelineResult(
                 success=False,
                 stage=stage,
@@ -210,7 +236,7 @@ class PipelineOrchestrator:
 
         except Exception as e:
             duration = time.time() - start
-            logger.error(f"Mapping failed: {e}", exc_info=True)
+            self.logger.error(f"Mapping failed: {e}", exc_info=True)
             result = PipelineResult(
                 success=False,
                 stage=stage,
@@ -269,7 +295,8 @@ class PipelineOrchestrator:
 
         except Exception as e:
             duration = time.time() - start
-            logger.error(f"Relationship inference failed: {e}", exc_info=True)
+            self.logger.error(
+                f"Relationship inference failed: {e}", exc_info=True)
             result = PipelineResult(
                 success=False,
                 stage=stage,
@@ -316,7 +343,7 @@ class PipelineOrchestrator:
 
         except Exception as e:
             duration = time.time() - start
-            logger.error(f"Loading failed: {e}", exc_info=True)
+            self.logger.error(f"Loading failed: {e}", exc_info=True)
             result = PipelineResult(
                 success=False,
                 stage=stage,
@@ -372,7 +399,7 @@ class PipelineOrchestrator:
 
         except Exception as e:
             duration = time.time() - start
-            logger.error(f"Validation failed: {e}", exc_info=True)
+            self.logger.error(f"Validation failed: {e}", exc_info=True)
             result = PipelineResult(
                 success=False,
                 stage=stage,
@@ -386,20 +413,21 @@ class PipelineOrchestrator:
     def cleanup_pipeline_artifacts(self):
         """Clean up temporary and intermediate files after pipeline completion."""
         if not self.config.cleanup_intermediate:
-            logger.info("Cleanup disabled - skipping artifact cleanup")
+            self.logger.info("Cleanup disabled - skipping artifact cleanup")
             return
 
-        logger.info("="*70)
-        logger.info("CLEANING UP PIPELINE ARTIFACTS")
-        logger.info("="*70)
+        self.logger.info("="*70)
+        self.logger.info("CLEANING UP PIPELINE ARTIFACTS")
+        self.logger.info("="*70)
 
         # Clean up temp directory
         if self.temp_dir and self.temp_dir.exists():
             try:
                 shutil.rmtree(self.temp_dir)
-                logger.info(f"Removed temporary directory: {self.temp_dir}")
+                self.logger.info(
+                    f"Removed temporary directory: {self.temp_dir}")
             except Exception as e:
-                logger.warning(f"Failed to remove temp directory: {e}")
+                self.logger.warning(f"Failed to remove temp directory: {e}")
 
         # Clean up old embedding cache if relationship builder was used
         if self.relationship_builder:
@@ -407,11 +435,11 @@ class PipelineOrchestrator:
                 self.relationship_builder.cleanup_intermediate_files(
                     keep_embeddings=False
                 )
-                logger.info("Cleaned up old embedding cache files")
+                self.logger.info("Cleaned up old embedding cache files")
             except Exception as e:
-                logger.warning(f"Failed to clean up embeddings: {e}")
+                self.logger.warning(f"Failed to clean up embeddings: {e}")
 
-        logger.info("Pipeline artifact cleanup completed")
+        self.logger.info("Pipeline artifact cleanup completed")
 
     def run_pipeline(self) -> bool:
         """
@@ -420,14 +448,14 @@ class PipelineOrchestrator:
         Returns:
             bool: True if all stages completed successfully
         """
-        logger.info("=" * 80)
-        logger.info("KSAMDS ETL PIPELINE START")
-        logger.info(
+        self.logger.info("=" * 80)
+        self.logger.info("KSAMDS ETL PIPELINE START")
+        self.logger.info(
             f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(
+        self.logger.info(
             f"Cleanup Intermediate Files: {self.config.cleanup_intermediate}")
-        logger.info("=" * 80)
-        logger.info("")
+        self.logger.info("=" * 80)
+        self.logger.info("")
 
         self.start_time = time.time()
         overall_success = True
@@ -438,10 +466,10 @@ class PipelineOrchestrator:
             self.results['extraction'] = result
             if not result.success:
                 overall_success = False
-                logger.error("Pipeline halted due to extraction failure")
+                self.logger.error("Pipeline halted due to extraction failure")
                 return False
         else:
-            logger.info("Skipping extraction stage")
+            self.logger.info("Skipping extraction stage")
 
         # Stage 2: Mapping
         if not self.config.skip_mapping:
@@ -449,10 +477,10 @@ class PipelineOrchestrator:
             self.results['mapping'] = result
             if not result.success:
                 overall_success = False
-                logger.error("Pipeline halted due to mapping failure")
+                self.logger.error("Pipeline halted due to mapping failure")
                 return False
         else:
-            logger.info("Skipping mapping stage")
+            self.logger.info("Skipping mapping stage")
 
         # Stage 3: Relationship Inference
         if not self.config.skip_relationship_inference:
@@ -460,11 +488,11 @@ class PipelineOrchestrator:
             self.results['relationship_inference'] = result
             if not result.success:
                 overall_success = False
-                logger.error(
+                self.logger.error(
                     "Pipeline halted due to relationship inference failure")
                 return False
         else:
-            logger.info("Skipping relationship inference stage")
+            self.logger.info("Skipping relationship inference stage")
 
         # Stage 4: Loading
         if not self.config.skip_loading:
@@ -472,10 +500,10 @@ class PipelineOrchestrator:
             self.results['loading'] = result
             if not result.success:
                 overall_success = False
-                logger.error("Pipeline halted due to loading failure")
+                self.logger.error("Pipeline halted due to loading failure")
                 return False
         else:
-            logger.info("Skipping loading stage")
+            self.logger.info("Skipping loading stage")
 
         # Stage 5: Validation
         if not self.config.skip_validation:
@@ -483,10 +511,10 @@ class PipelineOrchestrator:
             self.results['validation'] = result
             if not result.success:
                 overall_success = False
-                logger.warning("Validation stage reported issues")
+                self.logger.warning("Validation stage reported issues")
                 # Don't halt pipeline - validation failures are warnings
         else:
-            logger.info("Skipping validation stage")
+            self.logger.info("Skipping validation stage")
 
         # Cleanup artifacts if enabled
         if self.config.cleanup_intermediate:
