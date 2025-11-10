@@ -67,11 +67,9 @@ def get_applicable_dimensions(entity_type: str) -> List[str]:
     Returns:
         List of dimension names (e.g., ['type', 'level', 'basis'])
     """
-    entity_scope = ENTITY_CONFIG[entity_type]["scope"]
-
     applicable = []
     for dim_name, dim_meta in DIMENSION_CONFIG.items():
-        if entity_scope in dim_meta.scope:
+        if entity_type in dim_meta.applies_to:
             applicable.append(dim_name)
 
     return applicable
@@ -141,20 +139,21 @@ def get_dimension_options(
 
     # Determine the foreign key column name in the junction table
     if dimension_name == "environment":
-        dimension_fk = "env_id"
+        dimension_fk = "environment_id"
     else:
         dimension_fk = f"{dimension_name}_id"
 
-    # Special handling for physicality and cognitive (no scope filter)
-    if dimension_name in ["physicality", "cognitive"]:
+    # Dimensions without scope: mode, physicality, cognitive
+    if len(dim_meta.scope) == 0:
         query = f"""
             SELECT DISTINCT d.id, d.name
             FROM {dim_table} d
             INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
             ORDER BY d.name
         """
+        params = {}
     else:
-        # Query only dimension values that are actually used and match the scope
+        # Dimensions with scope: type, level, basis, environment
         query = f"""
             SELECT DISTINCT d.id, d.name
             FROM {dim_table} d
@@ -162,12 +161,10 @@ def get_dimension_options(
             WHERE d.scope = :scope
             ORDER BY d.name
         """
+        params = {"scope": entity_scope}
 
     try:
-        if dimension_name in ["physicality", "cognitive"]:
-            results = fetch_all(db, query)
-        else:
-            results = fetch_all(db, query, {"scope": entity_scope})
+        results = fetch_all(db, query, params)
 
         options = []
         for row in results:
@@ -286,10 +283,9 @@ def validate_filter_values(
             continue
 
         # Check if dimension applies to this entity type
-        entity_scope = ENTITY_CONFIG[entity_type]["scope"]
         dim_meta = DIMENSION_CONFIG[dim_name]
 
-        if entity_scope not in dim_meta.scope:
+        if entity_type not in dim_meta.applies_to:
             logger.warning(
                 f"Dimension '{dim_name}' does not apply to '{entity_type}', ignored"
             )
@@ -301,11 +297,12 @@ def validate_filter_values(
 
         # Determine the foreign key column name in the junction table
         if dim_name == "environment":
-            dimension_fk = "env_id"
+            dimension_fk = "environment_id"
         else:
             dimension_fk = f"{dim_name}_id"
 
-        if dim_name in ["physicality", "cognitive"]:
+        # Dimensions without scope
+        if len(dim_meta.scope) == 0:
             query = f"""
                 SELECT DISTINCT d.name 
                 FROM {dim_table} d
@@ -313,6 +310,8 @@ def validate_filter_values(
             """
             valid_values = [row["name"] for row in fetch_all(db, query)]
         else:
+            # Dimensions with scope
+            entity_scope = ENTITY_CONFIG[entity_type]["scope"]
             query = f"""
                 SELECT DISTINCT d.name 
                 FROM {dim_table} d

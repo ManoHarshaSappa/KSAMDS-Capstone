@@ -1,13 +1,18 @@
 """
-O*NET Database Loader for KSAMDS Project - UPDATED FOR LEVEL TRACKING
+O*NET Database Loader for KSAMDS Project - UPDATED FOR FULL DIMENSIONAL TRACKING
 
 This module handles loading the mapped O*NET data into the PostgreSQL
 KSAMDS database. It manages database connections, inserts entities,
 creates relationships, and handles constraint violations gracefully.
 
-UPDATED: Now properly handles level information in:
-1. Entity definitions (knowledge_level, skill_level, ability_level junction tables)
-2. Occupation relationships (level_id in occupation_knowledge, occupation_skill, occupation_ability)
+UPDATED: Now properly handles dimensional information in:
+1. Entity definitions (knowledge_level, skill_level, ability_level, etc. junction tables)
+2. Occupation relationships with full dimensional tracking:
+   - occupation_knowledge/skill/ability: type_id, level_id, basis_id
+   - occupation_function: environment_id, physicality_id, cognitive_id
+   - occupation_task: type_id, environment_id, mode_id
+3. Removed certification table support (no longer in schema)
+4. Fixed mode_dim to not use scope column (single-purpose dimension)
 """
 
 import pandas as pd
@@ -199,16 +204,8 @@ class ONetLoader:
                             if row['name'] not in self.dimension_lookups[dim_table]:
                                 self.dimension_lookups[dim_table][row['name']
                                                                   ] = row['id']
-                    elif dim_table == 'mode_dim':
-                        cursor.execute(
-                            f"SELECT id, scope, name FROM {dim_table}")
-                        for row in cursor.fetchall():
-                            key_with_scope = f"{row['scope']}:{row['name']}"
-                            self.dimension_lookups[dim_table][key_with_scope] = row['id']
-                            if row['name'] not in self.dimension_lookups[dim_table]:
-                                self.dimension_lookups[dim_table][row['name']
-                                                                  ] = row['id']
-                    else:  # physicality_dim, cognitive_dim
+                    # mode_dim, physicality_dim, cognitive_dim (no scope)
+                    else:
                         cursor.execute(f"SELECT id, name FROM {dim_table}")
                         for row in cursor.fetchall():
                             self.dimension_lookups[dim_table][row['name']
@@ -362,18 +359,18 @@ class ONetLoader:
                 logger.info(
                     f"✓ Inserted/verified {len(env_dims)} environment dimensions")
 
-                # Mode dimensions (Task only)
+                # Mode dimensions (Task only - no scope column needed)
                 mode_dims = [
-                    ('T', 'Tool-Based', 'Requires use of specific tools'),
-                    ('T', 'Process-Based', 'Follows defined processes'),
-                    ('T', 'Creative', 'Requires creative problem-solving'),
-                    ('T', 'Analytical', 'Requires data analysis'),
+                    ('Tool-Based', 'Requires use of specific tools'),
+                    ('Process-Based', 'Follows defined processes'),
+                    ('Creative', 'Requires creative problem-solving'),
+                    ('Analytical', 'Requires data analysis'),
                 ]
 
                 logger.info("⏳ Inserting mode dimensions...")
                 execute_batch(
                     cursor,
-                    "INSERT INTO mode_dim (scope, name, description) VALUES (%s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
+                    "INSERT INTO mode_dim (name, description) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
                     mode_dims,
                     page_size=100
                 )
@@ -1075,13 +1072,16 @@ class ONetLoader:
 
     def insert_occupation_relationships(self) -> bool:
         """
-        Insert occupation relationships with level tracking.
+        Insert occupation relationships with full dimensional tracking.
 
-        UPDATED: Now properly inserts level_id for K/S/A relationships.
+        UPDATED: Now properly inserts:
+        - occupation_knowledge/skill/ability: type_id, level_id, basis_id
+        - occupation_function: environment_id, physicality_id, cognitive_id  
+        - occupation_task: type_id, environment_id, mode_id
         """
         try:
             logger.info("=" * 70)
-            logger.info("INSERTING OCCUPATION RELATIONSHIPS WITH LEVELS")
+            logger.info("INSERTING OCCUPATION RELATIONSHIPS WITH DIMENSIONS")
             logger.info("-" * 70)
 
             total_relationships = 0
@@ -1091,7 +1091,7 @@ class ONetLoader:
                 cursor.execute(
                     f"SET search_path TO {self.db_config.schema}, public")
 
-                # Knowledge relationships (with levels)
+                # Knowledge relationships (with type, level, and basis)
                 if 'occupation_knowledge_relationships' in self.mapped_data:
                     df = self.mapped_data['occupation_knowledge_relationships']
                     logger.info(
@@ -1099,9 +1099,19 @@ class ONetLoader:
 
                     relationships = []
                     for _, row in df.iterrows():
+                        # Get level_id
                         level_id = None
                         if pd.notna(row.get('level')) and row['level']:
                             level_id = self._get_level_id(row['level'], 'K')
+
+                        # Get type_id and basis_id (these may not exist in current mapped data yet)
+                        type_id = None
+                        if pd.notna(row.get('type')) and row['type']:
+                            type_id = self._get_type_id(row['type'], 'K')
+
+                        basis_id = None
+                        if pd.notna(row.get('basis')) and row['basis']:
+                            basis_id = self._get_basis_id(row['basis'], 'K')
 
                         importance = row.get('importance_score')
                         if pd.notna(importance):
@@ -1112,15 +1122,17 @@ class ONetLoader:
                         relationships.append((
                             row['occupation_id'],
                             row['entity_id'],
+                            type_id,
                             level_id,
+                            basis_id,
                             importance
                         ))
 
                     execute_batch(
                         cursor,
                         """INSERT INTO occupation_knowledge 
-                           (occupation_id, knowledge_id, level_id, importance_score) 
-                           VALUES (%s, %s, %s, %s) 
+                           (occupation_id, knowledge_id, type_id, level_id, basis_id, importance_score) 
+                           VALUES (%s, %s, %s, %s, %s, %s) 
                            ON CONFLICT (occupation_id, knowledge_id) DO NOTHING""",
                         relationships,
                         page_size=1000
@@ -1129,7 +1141,7 @@ class ONetLoader:
                         f"✓ Inserted {len(relationships)} occupation-knowledge relationships")
                     total_relationships += len(relationships)
 
-                # Skill relationships (with levels)
+                # Skill relationships (with type, level, and basis)
                 if 'occupation_skill_relationships' in self.mapped_data:
                     df = self.mapped_data['occupation_skill_relationships']
                     logger.info(
@@ -1137,9 +1149,19 @@ class ONetLoader:
 
                     relationships = []
                     for _, row in df.iterrows():
+                        # Get level_id
                         level_id = None
                         if pd.notna(row.get('level')) and row['level']:
                             level_id = self._get_level_id(row['level'], 'S')
+
+                        # Get type_id and basis_id
+                        type_id = None
+                        if pd.notna(row.get('type')) and row['type']:
+                            type_id = self._get_type_id(row['type'], 'S')
+
+                        basis_id = None
+                        if pd.notna(row.get('basis')) and row['basis']:
+                            basis_id = self._get_basis_id(row['basis'], 'S')
 
                         importance = row.get('importance_score')
                         if pd.notna(importance):
@@ -1150,15 +1172,17 @@ class ONetLoader:
                         relationships.append((
                             row['occupation_id'],
                             row['entity_id'],
+                            type_id,
                             level_id,
+                            basis_id,
                             importance
                         ))
 
                     execute_batch(
                         cursor,
                         """INSERT INTO occupation_skill 
-                           (occupation_id, skill_id, level_id, importance_score) 
-                           VALUES (%s, %s, %s, %s) 
+                           (occupation_id, skill_id, type_id, level_id, basis_id, importance_score) 
+                           VALUES (%s, %s, %s, %s, %s, %s) 
                            ON CONFLICT (occupation_id, skill_id) DO NOTHING""",
                         relationships,
                         page_size=1000
@@ -1167,7 +1191,7 @@ class ONetLoader:
                         f"✓ Inserted {len(relationships)} occupation-skill relationships")
                     total_relationships += len(relationships)
 
-                # Ability relationships (with levels)
+                # Ability relationships (with type, level, and basis)
                 if 'occupation_ability_relationships' in self.mapped_data:
                     df = self.mapped_data['occupation_ability_relationships']
                     logger.info(
@@ -1175,9 +1199,19 @@ class ONetLoader:
 
                     relationships = []
                     for _, row in df.iterrows():
+                        # Get level_id
                         level_id = None
                         if pd.notna(row.get('level')) and row['level']:
                             level_id = self._get_level_id(row['level'], 'A')
+
+                        # Get type_id and basis_id
+                        type_id = None
+                        if pd.notna(row.get('type')) and row['type']:
+                            type_id = self._get_type_id(row['type'], 'A')
+
+                        basis_id = None
+                        if pd.notna(row.get('basis')) and row['basis']:
+                            basis_id = self._get_basis_id(row['basis'], 'A')
 
                         importance = row.get('importance_score')
                         if pd.notna(importance):
@@ -1188,15 +1222,17 @@ class ONetLoader:
                         relationships.append((
                             row['occupation_id'],
                             row['entity_id'],
+                            type_id,
                             level_id,
+                            basis_id,
                             importance
                         ))
 
                     execute_batch(
                         cursor,
                         """INSERT INTO occupation_ability 
-                           (occupation_id, ability_id, level_id, importance_score) 
-                           VALUES (%s, %s, %s, %s) 
+                           (occupation_id, ability_id, type_id, level_id, basis_id, importance_score) 
+                           VALUES (%s, %s, %s, %s, %s, %s) 
                            ON CONFLICT (occupation_id, ability_id) DO NOTHING""",
                         relationships,
                         page_size=1000
@@ -1205,22 +1241,53 @@ class ONetLoader:
                         f"✓ Inserted {len(relationships)} occupation-ability relationships")
                     total_relationships += len(relationships)
 
-                # Task relationships (no levels)
+                # Task relationships (with type, environment, and mode)
                 if 'occupation_task_relationships' in self.mapped_data:
                     df = self.mapped_data['occupation_task_relationships']
                     logger.info(
                         f"⏳ Processing {len(df)} occupation-task relationships...")
 
-                    relationships = [
-                        (row['source_id'], row['target_id'])
-                        for _, row in df.iterrows()
-                    ]
+                    relationships = []
+                    for _, row in df.iterrows():
+                        # Get type_id, environment_id, and mode_id (may not exist in current data)
+                        type_id = None
+                        if pd.notna(row.get('type')) and row['type']:
+                            type_id = self._get_type_id(row['type'], 'T')
+
+                        environment_id = None
+                        if pd.notna(row.get('environment')) and row['environment']:
+                            environment_id = self.dimension_lookups['environment_dim'].get(
+                                f"T:{row['environment']}",
+                                self.dimension_lookups['environment_dim'].get(
+                                    row['environment'])
+                            )
+
+                        mode_id = None
+                        if pd.notna(row.get('mode')) and row['mode']:
+                            mode_id = self.dimension_lookups['mode_dim'].get(
+                                row['mode'])
+
+                        importance = row.get('importance_score')
+                        if pd.notna(importance):
+                            importance = float(importance)
+                        else:
+                            importance = None
+
+                        relationships.append((
+                            row['source_id'],
+                            row['target_id'],
+                            type_id,
+                            environment_id,
+                            mode_id,
+                            importance
+                        ))
 
                     execute_batch(
                         cursor,
-                        """INSERT INTO occupation_task (occupation_id, task_id) 
-                           VALUES (%s, %s) 
-                           ON CONFLICT DO NOTHING""",
+                        """INSERT INTO occupation_task 
+                           (occupation_id, task_id, type_id, environment_id, mode_id, importance_score) 
+                           VALUES (%s, %s, %s, %s, %s, %s) 
+                           ON CONFLICT (occupation_id, task_id) DO NOTHING""",
                         relationships,
                         page_size=1000
                     )
@@ -1228,22 +1295,54 @@ class ONetLoader:
                         f"✓ Inserted {len(relationships)} occupation-task relationships")
                     total_relationships += len(relationships)
 
-                # Function relationships (no levels)
+                # Function relationships (with environment, physicality, and cognitive)
                 if 'occupation_function_relationships' in self.mapped_data:
                     df = self.mapped_data['occupation_function_relationships']
                     logger.info(
                         f"⏳ Processing {len(df)} occupation-function relationships...")
 
-                    relationships = [
-                        (row['source_id'], row['target_id'])
-                        for _, row in df.iterrows()
-                    ]
+                    relationships = []
+                    for _, row in df.iterrows():
+                        # Get environment_id, physicality_id, and cognitive_id (may not exist in current data)
+                        environment_id = None
+                        if pd.notna(row.get('environment')) and row['environment']:
+                            environment_id = self.dimension_lookups['environment_dim'].get(
+                                f"F:{row['environment']}",
+                                self.dimension_lookups['environment_dim'].get(
+                                    row['environment'])
+                            )
+
+                        physicality_id = None
+                        if pd.notna(row.get('physicality')) and row['physicality']:
+                            physicality_id = self.dimension_lookups['physicality_dim'].get(
+                                row['physicality'])
+
+                        cognitive_id = None
+                        if pd.notna(row.get('cognitive')) and row['cognitive']:
+                            cognitive_id = self.dimension_lookups['cognitive_dim'].get(
+                                row['cognitive'])
+
+                        importance = row.get('importance_score')
+                        if pd.notna(importance):
+                            importance = float(importance)
+                        else:
+                            importance = None
+
+                        relationships.append((
+                            row['source_id'],
+                            row['target_id'],
+                            environment_id,
+                            physicality_id,
+                            cognitive_id,
+                            importance
+                        ))
 
                     execute_batch(
                         cursor,
-                        """INSERT INTO occupation_function (occupation_id, function_id) 
-                           VALUES (%s, %s) 
-                           ON CONFLICT DO NOTHING""",
+                        """INSERT INTO occupation_function 
+                           (occupation_id, function_id, environment_id, physicality_id, cognitive_id, importance_score) 
+                           VALUES (%s, %s, %s, %s, %s, %s) 
+                           ON CONFLICT (occupation_id, function_id) DO NOTHING""",
                         relationships,
                         page_size=1000
                     )

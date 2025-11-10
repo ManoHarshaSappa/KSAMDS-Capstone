@@ -27,7 +27,7 @@ from onet_extractor import ONetExtractor
 from onet_mapper import ONetMapper
 from onet_loader import ONetLoader, DatabaseConfig
 from onet_validator import ONetValidator
-from embedding_relationship_builder import EmbeddingRelationshipBuilder
+from onet_relations import ONetRelationshipBuilder
 
 # Get project root and setup log directory
 project_root = Path(__file__).parent.parent.parent.parent
@@ -228,7 +228,7 @@ class PipelineOrchestrator:
         start = time.time()
 
         try:
-            self.relationship_builder = EmbeddingRelationshipBuilder(
+            self.relationship_builder = ONetRelationshipBuilder(
                 embedding_model="models/gemini-embedding-001",
                 use_cache=True
             )
@@ -590,9 +590,8 @@ class PipelineOrchestrator:
         lines.append("  └── embeddings/          (Embedding cache)")
         lines.append("")
         lines.append(f"Reports: {self.reports_dir}")
-        lines.append("  ├── pipeline_execution_*.txt")
-        lines.append("  ├── embedding_relationship_report_*.txt")
-        lines.append("  └── validation_report_*.txt")
+        lines.append("  ├── latest_pipeline_report.txt")
+        lines.append("  └── latest_validation_report.txt")
         lines.append("")
 
         lines.append("=" * 80)
@@ -607,48 +606,15 @@ class PipelineOrchestrator:
         return "\n".join(lines)
 
     def save_execution_report(self):
-        """Save execution report to file."""
+        """Save execution report to file (only latest version)."""
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-        # Text report
+        # Text report only
         text_report = self.generate_summary_report()
-        text_path = self.reports_dir / f"pipeline_execution_{timestamp}.txt"
-        with open(text_path, 'w') as f:
-            f.write(text_report)
-        logger.info(f"Execution report saved to {text_path}")
-
-        # JSON report
-        json_report = {
-            "timestamp": datetime.now().isoformat(),
-            "cleanup_intermediate": self.config.cleanup_intermediate,
-            "duration": self.end_time - self.start_time if self.end_time else 0,
-            "success": all(r.success for r in self.results.values()),
-            "stages": {
-                stage: {
-                    "success": result.success,
-                    "duration": result.duration,
-                    "message": result.message,
-                    "details": result.details
-                }
-                for stage, result in self.results.items()
-            }
-        }
-
-        json_path = self.reports_dir / f"pipeline_execution_{timestamp}.json"
-        with open(json_path, 'w') as f:
-            json.dump(json_report, f, indent=2)
-        logger.info(f"JSON report saved to {json_path}")
-
-        # Also save latest
-        latest_text = self.reports_dir / "pipeline_execution_latest.txt"
+        latest_text = self.reports_dir / "latest_pipeline_report.txt"
         with open(latest_text, 'w') as f:
             f.write(text_report)
-
-        latest_json = self.reports_dir / "pipeline_execution_latest.json"
-        with open(latest_json, 'w') as f:
-            json.dump(json_report, f, indent=2)
+        logger.info(f"Pipeline report saved to {latest_text}")
 
 
 def parse_arguments():

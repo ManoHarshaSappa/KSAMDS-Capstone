@@ -365,19 +365,19 @@ DIMENSION_CONFIG: Dict[str, DimensionMetadata] = {
     "mode": DimensionMetadata(
         dimension_name="mode",
         table_name="mode_dim",
-        scope=["T"],
+        scope=[],  # No scope - only applies to tasks
         applies_to=["tasks"]
     ),
     "physicality": DimensionMetadata(
         dimension_name="physicality",
         table_name="physicality_dim",
-        scope=["F"],
+        scope=[],  # No scope - only applies to functions
         applies_to=["functions"]
     ),
     "cognitive": DimensionMetadata(
         dimension_name="cognitive",
         table_name="cognitive_dim",
-        scope=["F"],
+        scope=[],  # No scope - only applies to functions
         applies_to=["functions"]
     )
 }

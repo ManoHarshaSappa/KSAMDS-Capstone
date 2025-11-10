@@ -731,33 +731,13 @@ class ONetValidator:
         }
 
     def save_reports(self):
-        """Save validation reports to files."""
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-        # Text report
+        """Save validation report to file (only latest version)."""
+        # Text report only
         text_report = self.generate_text_report()
-        text_path = self.output_dir / f"validation_report_{timestamp}.txt"
-        with open(text_path, 'w') as f:
-            f.write(text_report)
-        logger.info(f"Text report saved to {text_path}")
-
-        # JSON report
-        json_report = self.generate_json_report()
-        json_path = self.output_dir / f"validation_report_{timestamp}.json"
-        with open(json_path, 'w') as f:
-            json.dump(json_report, f, indent=2)
-        logger.info(f"JSON report saved to {json_path}")
-
-        # Also save latest report (overwrite)
-        latest_text = self.output_dir / "validation_report_latest.txt"
+        latest_text = self.output_dir / "latest_validation_report.txt"
         with open(latest_text, 'w') as f:
             f.write(text_report)
-
-        latest_json = self.output_dir / "validation_report_latest.json"
-        with open(latest_json, 'w') as f:
-            json.dump(json_report, f, indent=2)
-
-        logger.info(f"Latest reports saved to {self.output_dir}")
+        logger.info(f"Validation report saved to {latest_text}")
 
     # ==========================================
     # Main Validation Pipeline
@@ -895,11 +875,9 @@ def main():
             logger.error("Review the validation report for details.")
 
         logger.info("-" * 70)
-        logger.info("REPORTS GENERATED")
+        logger.info("REPORT GENERATED")
         logger.info(f"Location: {validator.output_dir}")
-        logger.info("Files:")
-        logger.info("  - validation_report_latest.txt")
-        logger.info("  - validation_report_latest.json")
+        logger.info("File: latest_validation_report.txt")
         logger.info("=" * 70)
 
         # Exit with error code if validation failed
