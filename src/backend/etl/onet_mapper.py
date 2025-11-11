@@ -303,7 +303,11 @@ class ONetMapper:
             title = row.get('Title', '')
             description = row.get('Description', '')
 
-            entity_id = generate_deterministic_uuid('occupation', onet_soc)
+            # Generate UUID based on occupation TITLE, not SOC code
+            # This ensures cross-source matching (e.g., O*NET and Skills Framework)
+            entity_id = generate_deterministic_uuid('occupation', title)
+
+            # Still map SOC code to UUID for internal O*NET relationships
             self.onet_to_ksamds_ids[onet_soc] = entity_id
 
             occupation = KSAMDSEntity(

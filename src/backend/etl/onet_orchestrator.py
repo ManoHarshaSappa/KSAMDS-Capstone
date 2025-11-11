@@ -642,7 +642,7 @@ class PipelineOrchestrator:
         latest_text = self.reports_dir / "latest_pipeline_report.txt"
         with open(latest_text, 'w') as f:
             f.write(text_report)
-        logger.info(f"Pipeline report saved to {latest_text}")
+        self.logger.info(f"Pipeline report saved to {latest_text}")
 
 
 def parse_arguments():
@@ -746,6 +746,9 @@ def parse_arguments():
 
 def main():
     """Main function to run the orchestrator."""
+    # Setup logging first
+    logger, log_file, latest_log = setup_logging()
+
     args = parse_arguments()
 
     # Get database password from env or args
