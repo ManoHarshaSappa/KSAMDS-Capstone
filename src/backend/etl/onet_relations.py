@@ -14,6 +14,12 @@ Consolidates functionality from:
 
 Uses Google AI API (models/gemini-embedding-001) for embedding generation
 with caching, batch processing, and comprehensive error handling.
+
+MODIFIED:
+- Replaced dynamic (hash-based) cache keys with simple, static cache file names.
+- Disabled cache cleanup in main() to ensure cache is persistent.
+- MODIFIED: Changed cache directory to 'embedding_ksamds'.
+- MODIFIED: Removed Google Colab logic, now uses .env file from project root.
 """
 
 import os
@@ -32,6 +38,7 @@ import pandas as pd
 import numpy as np
 import google.generativeai as genai
 from sklearn.metrics.pairwise import cosine_similarity
+from dotenv import load_dotenv  # --- ADDED THIS IMPORT ---
 
 # Configure logging
 logging.basicConfig(
@@ -97,7 +104,8 @@ class ONetRelationshipBuilder:
         # Setup directory structure
         self.input_dir = self.project_root / "data/archive/mapped"
         self.output_dir = self.project_root / "data/archive/relationships"
-        self.cache_dir = self.project_root / "data/archive/embeddings"
+        # --- MODIFICATION: Changed cache directory ---
+        self.cache_dir = self.project_root / "data/archive/embedding_ksamds"
         self.reports_dir = self.project_root / "data/reports"
 
         # Create directories
@@ -181,22 +189,28 @@ class ONetRelationshipBuilder:
             logger.info(f"  {rel_type}: {max_val}")
         logger.info("=" * 70)
 
+    # --- FUNCTION REPLACED ---
     def _configure_google_ai(self):
-        """Configure Google AI API with proper credentials."""
-        try:
-            if 'GOOGLE_API_KEY' in os.environ:
-                genai.configure(api_key=os.environ.get('GOOGLE_API_KEY'))
-                logger.info("Configured Google AI with environment variable")
-            else:
-                # Try Google Colab userdata
-                from google.colab import userdata
-                api_key = userdata.get('GOOGLE_API_KEY')
-                genai.configure(api_key=api_key)
-                logger.info("Configured Google AI with Colab userdata")
-        except Exception as e:
+        """Configure Google AI API with proper credentials from .env file."""
+        
+        # Load .env file from project root
+        dotenv_path = self.project_root / ".env"
+        if dotenv_path.exists():
+            load_dotenv(dotenv_path=dotenv_path)
+            logger.info(f"Loaded environment variables from {dotenv_path}")
+        else:
+            logger.warning(f".env file not found at {dotenv_path}")
+        
+        api_key = os.environ.get('GOOGLE_API_KEY')
+
+        if api_key:
+            genai.configure(api_key=api_key)
+            logger.info("Configured Google AI with GOOGLE_API_KEY")
+        else:
             logger.error(
-                "Could not configure Google AI. Please set GOOGLE_API_KEY environment variable.")
-            raise e
+                "Could not configure Google AI. Please set GOOGLE_API_KEY in your .env file.")
+            raise ValueError("GOOGLE_API_KEY not found in environment.")
+    # --- END OF REPLACEMENT ---
 
     # ========================================================================
     # EMBEDDING GENERATION
@@ -206,14 +220,15 @@ class ONetRelationshipBuilder:
         """Create rich text representation for embedding generation."""
         return f"{entity_type}: {name}"
 
-    def _generate_cache_key(self, df: pd.DataFrame, entity_type: str) -> str:
-        """Generate unique cache key based on dataframe content and model."""
-        content = f"{entity_type}_{self.embedding_model}_{df.to_json()}"
-        return hashlib.md5(content.encode()).hexdigest()
+    # --- MODIFICATION: Removed _generate_cache_key function ---
 
-    def _get_cache_path(self, entity_type: str, cache_key: str) -> Path:
-        """Get full path for a cache file."""
-        return self.cache_dir / f"{entity_type}_{cache_key}.pkl"
+    def _get_cache_path(self, entity_type: str) -> Path:
+        """
+        Get full path for a cache file using a simple, static name.
+        """
+        # --- MODIFICATION: Use a simple, static name ---
+        model_suffix = self.embedding_model.split('/')[-1]
+        return self.cache_dir / f"inferred_{entity_type}_embeddings_{model_suffix}.pkl"
 
     def _generate_embeddings_for_entity_type(
         self,
@@ -235,9 +250,8 @@ class ONetRelationshipBuilder:
         method_start_time = log_timed_event(
             f"Processing embeddings for {len(df)} '{entity_type}' entities...")
 
-        # Check cache
-        cache_key = self._generate_cache_key(df, entity_type)
-        cache_path = self._get_cache_path(entity_type, cache_key)
+        # --- MODIFICATION: Simplified cache path logic ---
+        cache_path = self._get_cache_path(entity_type)
         self._session_cache_files.add(cache_path)
 
         if self.use_cache and cache_path.exists():
@@ -304,8 +318,9 @@ class ONetRelationshipBuilder:
                                 name: np.array(embedding)
                                 for name, embedding in zip(names[:len(all_embeddings)], all_embeddings)
                             }
+                            # --- MODIFICATION: Use simple partial name ---
                             partial_path = self.cache_dir / \
-                                f"{entity_type}_{cache_key}_partial.pkl"
+                                f"inferred_{entity_type}_embeddings_partial.pkl"
                             with open(partial_path, 'wb') as f:
                                 pickle.dump(partial_embeddings, f)
                             logger.info(
@@ -358,15 +373,16 @@ class ONetRelationshipBuilder:
             ('functions', 'Function'),
             ('tasks', 'Task')
         ]
-
-        for key, entity_type in entity_configs:
-            logger.info(f"\nProcessing: {entity_type.upper()}")
+        
+        # --- MODIFICATION: Match entity_type keys to file keys ---
+        for key, entity_type_text in entity_configs:
+            logger.info(f"\nProcessing: {entity_type_text.upper()}")
             logger.info(f"Records to process: {len(entities[key])}")
             logger.info("-" * 70)
 
             embeddings[key] = self._generate_embeddings_for_entity_type(
                 df=entities[key],
-                entity_type=entity_type
+                entity_type=entity_type_text # Use 'Knowledge' as text
             )
 
         logger.info("=" * 70)
@@ -910,7 +926,8 @@ def main():
 
     # Build relationships
     try:
-        relationships = builder.build_relationships(cleanup_after=True)
+        # --- MODIFICATION: Set cleanup_after=False to preserve cache ---
+        relationships = builder.build_relationships(cleanup_after=False)
         total = sum(len(df) for df in relationships.values())
         logger.info(f"\n✓ Successfully generated {total:,} relationships!")
 

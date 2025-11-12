@@ -1,21 +1,24 @@
 """
-O*NET Data Mapper for KSAMDS Project - DETERMINISTIC VERSION WITH IM FILTERING
-Updated to properly handle multiple proficiency levels per entity
+O*NET Data Mapper for KSAMDS Project - DETERMINISTIC VERSION WITH DIMENSION MAPPING
 
 This module handles the complex mapping and transformation of O*NET data
-into the KSAMDS multi-dimensional structure. Uses deterministic UUIDs to
-ensure idempotent pipeline execution.
+into the KSAMDS multi-dimensional structure. It now integrates pre-generated
+embeddings and nearest-neighbor search logic to populate dimension fields
+(Basis, Type, Level, Mode, Environment, Physicality, Cognitive) directly
+in the occupation relationship tables, based on the methodology defined in
+onet_occupation_features.py and onet_embedding_generator.py.
 
-IMPORTANT: Only maps Knowledge, Skills, Abilities, and Functions that have
-Scale ID = 'IM' (Importance) and Data Value >= 3.0 to ensure relevance.
-
-UPDATED: Now properly extracts level (LV) data from O*NET and maps it to
-KSAMDS level dimensions, tracking both entity levels and occupation requirements.
+FIXED:
+1. Ensure OccupationRelationship CSVs (Task, Function) save all attributes,
+   including importance_score for Function.
+2. Corrected saving loop to ensure Occupation_Skills and Occupation_Abilities
+   relationship files are created.
 """
 
 import pandas as pd
 import numpy as np
 import logging
+import pickle
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Set, Any
 import re
@@ -24,6 +27,7 @@ from fuzzywuzzy import fuzz  # type: ignore
 from collections import defaultdict
 import uuid
 import shutil
+import itertools
 
 # Configure logging
 logging.basicConfig(
@@ -40,21 +44,8 @@ KSAMDS_NAMESPACE = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
 def generate_deterministic_uuid(entity_type: str, name: str) -> str:
     """
     Generate deterministic UUID based on entity type and name.
-
-    Uses UUID v5 (name-based) to ensure the same entity always gets
-    the same UUID across multiple pipeline runs.
-
-    Args:
-        entity_type: Type of entity (e.g., 'knowledge', 'skill', 'occupation')
-        name: Name of the entity (must be unique within entity type)
-
-    Returns:
-        str: Deterministic UUID as string
     """
-    # Create a unique identifier by combining entity type and name
     unique_identifier = f"{entity_type.lower()}:{name.strip()}"
-
-    # Generate UUID v5 using the KSAMDS namespace
     return str(uuid.uuid5(KSAMDS_NAMESPACE, unique_identifier))
 
 
@@ -77,11 +68,21 @@ class KSAMDSEntity:
 
 @dataclass
 class OccupationRelationship:
-    """Represents an occupation relationship with level and importance tracking."""
+    """Represents an occupation relationship with all dimensions."""
     occupation_id: str
     entity_id: str
+    # KSA Dimensions
     level: Optional[str] = None
+    basis: Optional[str] = None
+    type: Optional[str] = None # KSA Type
     importance_score: Optional[float] = None
+    # Task Dimensions
+    mode: Optional[str] = None
+    # Task/Function Environment (Scope F or T)
+    environment: Optional[str] = None
+    # Function Dimensions
+    physicality: Optional[str] = None
+    cognitive: Optional[str] = None
 
 
 class ONetMapper:
@@ -90,11 +91,12 @@ class ONetMapper:
     def __init__(self):
         """Initialize the O*NET mapper."""
         # Get project root directory (3 levels up from etl folder)
-        project_root = Path(__file__).parent.parent.parent.parent
+        project_root = Path(__file__).resolve().parents[3]
 
         # Setup directory structure
         self.processed_dir = project_root / "data/archive/intermediate"
         self.mapped_dir = project_root / "data/archive/mapped"
+        self.embeddings_dir = project_root / "data/archive/embeddings"
 
         self.mapped_dir.mkdir(parents=True, exist_ok=True)
 
@@ -104,44 +106,157 @@ class ONetMapper:
             'occupation': {}, 'function': {}, 'task': {},
             'education_level': {}, 'certification': {}
         }
-        self.hierarchy_mappings = {}
-        self.job_zone_lookup = {}
-        self.duplicate_groups = defaultdict(list)
-        self.similarity_threshold = 85
-        self.onet_to_ksamds_ids = {}
+        self.onet_to_ksamds_ids: Dict[str, str] = {}
         self.ksamds_relationships = defaultdict(list)
+        self.job_zone_lookup: Dict[str, int] = {}
+        self.similarity_threshold = 85
 
-        # NEW: Track entity-level mappings for occupation relationships
-        # Format: {(onet_soc, element_id): level_name}
-        self.occupation_entity_levels = {}
+        # Loaded embeddings and taxonomy data
+        self.taxonomy_embeds: Dict[str, Tuple[Optional[np.ndarray], List[str]]] = {}
+        self.query_data: Dict[str, Any] = {}
+        self.model_name_suffix = "embedding-001" # Default suffix from onet_embedding_generator.py
+
+        # Data structure for KSA Type mapping (for pre-computed entities)
+        self.hierarchy_mappings: Dict[str, str] = {}
+        
+        # New: Track entity-level mappings for occupation relationships
+        self.occupation_entity_levels: Dict[Tuple[str, str], str] = {}
+
+
+    # --- Embedding and Utility Functions (Copied/Adapted from onet_occupation_features.py) ---
+
+    def find_best_match(self, query_embedding: List[float], document_embeddings: np.ndarray, document_names: List[str]) -> str:
+        """Finds the best match using cosine similarity."""
+        if query_embedding is None or document_embeddings is None:
+            return "Embedding_Failed"
+
+        query_norm = np.array(query_embedding) / np.linalg.norm(query_embedding)
+        
+        # Guard against zero-norm documents (shouldn't happen with the model, but for safety)
+        doc_norms = np.linalg.norm(document_embeddings, axis=1, keepdims=True)
+        doc_norms[doc_norms == 0] = 1e-12 # Prevent division by zero
+        
+        doc_normalized = document_embeddings / doc_norms
+
+        similarities = np.dot(doc_normalized, query_norm)
+        best_index = np.argmax(similarities)
+        return document_names[best_index]
+
+    def _load_onet_embeddings(self) -> bool:
+        """Loads all necessary embeddings and query data from cache files."""
+        logger.info("=" * 70)
+        logger.info("LOADING EMBEDDINGS AND QUERY DATA")
+        logger.info("=" * 70)
+        
+        # 1. Determine model suffix for file names (A bit brittle, assumes default)
+        taxonomy_cache_file = self.embeddings_dir / f"taxonomy_embeddings_{self.model_name_suffix}.pkl"
+
+        # 2. Load Taxonomy Embeddings
+        try:
+            with open(taxonomy_cache_file, 'rb') as f:
+                self.taxonomy_embeds = pickle.load(f)
+            logger.info(f"Successfully loaded taxonomy embeddings from {taxonomy_cache_file.name}")
+        except Exception as e:
+            logger.error(f"Failed to load taxonomy embeddings: {e}")
+            return False
+            
+        # 3. Load Query Embeddings (KSA, Function, Task)
+        query_files = ['knowledge', 'skills', 'abilities', 'function', 'task']
+        for key in query_files:
+            cache_file = self.embeddings_dir / f"{key}_query_data_{self.model_name_suffix}.pkl"
+            try:
+                with open(cache_file, 'rb') as f:
+                    self.query_data[key] = pickle.load(f)
+                logger.info(f"Loaded {key} query data from {cache_file.name}")
+            except Exception as e:
+                logger.error(f"Failed to load {key} query data: {e}")
+                return False
+                
+        # 4. Prepare lookups from query data (Element ID or Task Text -> Embeddings/Data)
+        self._prepare_query_lookups()
+        
+        return True
+
+    def _prepare_query_lookups(self):
+        """
+        Transforms loaded query data into efficient lookups:
+        - KSA/Function: (O*NET-SOC Code, Element ID) -> (Query Embedding, Row Data)
+        - Task: (O*NET-SOC Code, Task Text) -> (Query Embedding, Task Type)
+        """
+        self.query_lookups = defaultdict(dict)
+        
+        # --- KSA and Function Lookups ---
+        for key in ['knowledge', 'skills', 'abilities', 'function']:
+            if key in self.query_data:
+                # The 'valid_rows' in onet_occupation_features.py contains the row data for all valid queries
+                embeds = self.query_data[key]['embeddings']
+                # FIX: Use 'valid_rows' key instead of 'valid_rows_data'
+                rows_data = self.query_data[key]['valid_rows'] 
+                
+                for emb, row in zip(embeds, rows_data):
+                    # KSA/Function uses Element ID as a unique identifier per SOC
+                    soc_code = row['O*NET-SOC Code']
+                    element_id = row['Element ID']
+                    # Store (embedding, row_data) keyed by (SOC_Code, Element_ID)
+                    self.query_lookups[key][(soc_code, element_id)] = (emb, row)
+                    
+        # --- Task Lookup ---
+        if 'task' in self.query_data:
+            # The 'valid_tasks_info' structure is correct for tasks
+            embeds = self.query_data['task']['embeddings']
+            tasks_info = self.query_data['task']['valid_tasks_info']
+            
+            # The Task Statement DF doesn't contain Element ID, only Task Text.
+            # We need the task statement DF to get the Task ID for the join key.
+            task_df = self.onet_data.get('task_statements')
+            if task_df is None:
+                logger.error("Task statements data not loaded, cannot build task lookups.")
+                return
+
+            # A quick way to get SOC code from title:
+            occupation_df = self.onet_data.get('occupation_data')
+            if occupation_df is not None:
+                # Create a Title to SOC Code lookup (for many-to-one mapping)
+                title_to_soc = pd.Series(occupation_df['O*NET-SOC Code'].values, index=occupation_df['Title']).to_dict()
+                
+                for emb, (title, task_text, task_type) in zip(embeds, tasks_info):
+                    soc_code = title_to_soc.get(title)
+                    if soc_code:
+                        # Store (embedding, task_type) keyed by (SOC_Code, Task Text)
+                        self.query_lookups['task'][(soc_code, task_text)] = (emb, task_type)
+                    else:
+                         logger.warning(f"Could not find SOC code for title: {title}")
 
     def load_onet_data(self) -> bool:
         """Load processed O*NET CSV files."""
+        # ... (Same as original)
         logger.info("=" * 70)
         logger.info("LOADING O*NET DATA")
         logger.info("=" * 70)
 
         required_files = ['knowledge', 'skills', 'abilities', 'occupation_data',
                           'task_statements', 'work_activities',
-                          'content_model_reference', 'job_zones']
+                          'content_model_reference', 'job_zones', 'task_ratings']
 
         try:
             for file_key in required_files:
                 csv_path = self.processed_dir / f"{file_key}.csv"
                 if csv_path.exists():
-                    self.onet_data[file_key] = pd.read_csv(csv_path)
+                    # Use low_memory=False for large files
+                    self.onet_data[file_key] = pd.read_csv(csv_path, low_memory=False)
                     logger.info(
                         f"Loaded {file_key}: {len(self.onet_data[file_key])} records")
                 else:
                     logger.error(f"Required file not found: {csv_path}")
                     return False
 
+            # Load optional files
             optional_files = ['scales_reference',
                               'education_training_experience']
             for file_key in optional_files:
                 csv_path = self.processed_dir / f"{file_key}.csv"
                 if csv_path.exists():
-                    self.onet_data[file_key] = pd.read_csv(csv_path)
+                    self.onet_data[file_key] = pd.read_csv(csv_path, low_memory=False)
                     logger.info(
                         f"Loaded optional {file_key}: {len(self.onet_data[file_key])} records")
 
@@ -158,6 +273,7 @@ class ONetMapper:
 
         logger.info("Building O*NET hierarchy mappings...")
 
+        # KSA Type mappings from Element ID prefix
         self.hierarchy_mappings = {
             '1.A.1': 'Cognitive', '1.A.2': 'Physical', '1.A.3': 'Physical', '1.A.4': 'Sensory',
             '2.A.1': 'Technical', '2.A.2': 'Technical', '2.B.1': 'Analytical', '2.B.2': 'Social',
@@ -177,7 +293,7 @@ class ONetMapper:
         return True
 
     def get_type_from_hierarchy(self, element_id: str) -> str:
-        """Get type dimension from O*NET hierarchy."""
+        """Get type dimension from O*NET hierarchy (for KSA entities)."""
         for hierarchy_prefix, ksamds_type in self.hierarchy_mappings.items():
             if element_id.startswith(hierarchy_prefix):
                 return ksamds_type
@@ -185,20 +301,10 @@ class ONetMapper:
 
     def map_level_value_to_category(self, lv_value: float, scope: str) -> str:
         """
-        Map O*NET Level (LV) scale value to KSAMDS level category.
-
-        O*NET uses a 1-7 scale for level values. This maps them to our
-        predefined level categories based on scope (K, S, or A).
-
-        Args:
-            lv_value: O*NET level value (typically 0-7)
-            scope: Entity scope ('K' for Knowledge, 'S' for Skills, 'A' for Abilities)
-
-        Returns:
-            str: KSAMDS level category name
+        Map O*NET Level (LV) scale value to KSAMDS level category (replicating onet_occupation_features.py logic).
         """
         if pd.isna(lv_value):
-            # Default to middle level if no data
+            # Fallback to middle level if no data
             if scope == 'K':
                 return 'Intermediate'
             elif scope == 'S':
@@ -206,46 +312,37 @@ class ONetMapper:
             else:  # 'A'
                 return 'Moderate'
 
-        # Map based on scope
+        # Map based on scope (Logic copied from onet_occupation_features.py)
         if scope == 'K':  # Knowledge: Basic, Intermediate, Advanced, Expert
-            if lv_value <= 2.0:
+            # NOTE: The feature generation script uses different cutoffs: (0-1.99 basic, 2-3.99 intermediate, 4-7 advanced)
+            # We will use the explicit cutoffs from the feature script for consistency in the relationship table.
+            if lv_value < 2.0:
                 return 'Basic'
-            elif lv_value <= 4.0:
+            elif lv_value < 4.0:
                 return 'Intermediate'
-            elif lv_value <= 6.0:
-                return 'Advanced'
             else:
-                return 'Expert'
+                return 'Advanced' # Changed from Expert to Advanced for consistency with onet_occupation_features.py
 
         elif scope == 'S':  # Skills: Novice, Proficient, Expert, Master
-            if lv_value <= 2.0:
-                return 'Novice'
-            elif lv_value <= 4.5:
-                return 'Proficient'
-            elif lv_value <= 6.0:
-                return 'Expert'
+            # NOTE: The feature generation script uses different cutoffs: (0-1.99 basic, 2-3.99 intermediate, 4-6 advanced)
+            if lv_value < 2.0:
+                return 'Basic' # Changed from Novice to Basic for consistency with onet_occupation_features.py
+            elif lv_value < 4.0:
+                return 'Intermediate' # Changed from Proficient to Intermediate for consistency with onet_occupation_features.py
             else:
-                return 'Master'
+                return 'Advanced' # Changed from Expert/Master to Advanced for consistency with onet_occupation_features.py
 
         else:  # 'A' - Abilities: Low, Moderate, High
-            if lv_value <= 3.0:
-                return 'Low'
-            elif lv_value <= 5.0:
-                return 'Moderate'
+            # NOTE: The feature generation script uses different cutoffs: (0-1.99 basic, 2-3.99 intermediate, 4-6 advanced)
+            if lv_value < 2.0:
+                return 'Basic' # Changed from Low to Basic for consistency with onet_occupation_features.py
+            elif lv_value < 4.0:
+                return 'Intermediate' # Changed from Moderate to Intermediate for consistency with onet_occupation_features.py
             else:
-                return 'High'
-
-    def get_level_from_rating(self, lv_score: float, entity_type: str) -> str:
-        """
-        Legacy method for backward compatibility.
-        Now delegates to map_level_value_to_category.
-        """
-        scope_map = {'knowledge': 'K', 'skill': 'S', 'ability': 'A'}
-        scope = scope_map.get(entity_type, 'K')
-        return self.map_level_value_to_category(lv_score, scope)
+                return 'Advanced' # Changed from High to Advanced for consistency with onet_occupation_features.py
 
     def get_basis_from_job_zone(self, job_zone: int) -> List[str]:
-        """Map job zone to basis dimensions."""
+        """Map job zone to basis dimensions (Used for Entity Basis Dims)."""
         if job_zone <= 2:
             return ['On-the-Job Training']
         elif job_zone == 3:
@@ -257,6 +354,7 @@ class ONetMapper:
 
     def map_similar_entities(self, df: pd.DataFrame, name_col: str = 'Element Name') -> Dict[str, str]:
         """Group similar entities to avoid duplicates."""
+        # ... (Same as original)
         unique_names = df[name_col].unique()
         name_to_canonical = {}
         processed = set()
@@ -271,7 +369,7 @@ class ONetMapper:
             for other_name in unique_names:
                 if other_name != name and other_name not in processed:
                     similarity_score = fuzz.ratio(
-                        name.lower(), other_name.lower())
+                        str(name).lower(), str(other_name).lower())
                     if similarity_score >= self.similarity_threshold:
                         similar_group.append(other_name)
                         processed.add(other_name)
@@ -280,13 +378,11 @@ class ONetMapper:
                 name_to_canonical[similar_name] = canonical_name
             processed.add(name)
 
-            if len(similar_group) > 1:
-                self.duplicate_groups[canonical_name] = similar_group
-
         return name_to_canonical
 
     def map_occupation_entities(self) -> Dict[str, KSAMDSEntity]:
         """Map O*NET occupation data to KSAMDS occupation entities."""
+        # ... (Same as original)
         logger.info("=" * 70)
         logger.info("MAPPING OCCUPATION ENTITIES")
         logger.info("=" * 70)
@@ -301,17 +397,14 @@ class ONetMapper:
         for _, row in df.iterrows():
             onet_soc = row.get('O*NET-SOC Code', '')
             title = row.get('Title', '')
-            description = row.get('Description', '')
-
+            description = row.get('Description', None) # Get the description
             # Generate UUID based on occupation TITLE, not SOC code
-            # This ensures cross-source matching (e.g., O*NET and Skills Framework)
             entity_id = generate_deterministic_uuid('occupation', title)
-
-            # Still map SOC code to UUID for internal O*NET relationships
             self.onet_to_ksamds_ids[onet_soc] = entity_id
 
             occupation = KSAMDSEntity(
-                id=entity_id, name=title, source_ref=onet_soc)
+                id=entity_id, name=title, source_ref=onet_soc,
+                type_dims=[description] if pd.notna(description) else [])
             occupations[entity_id] = occupation
 
         logger.info(f"Mapped {len(occupations)} occupation entities")
@@ -320,9 +413,7 @@ class ONetMapper:
     def map_knowledge_entities(self) -> Dict[str, KSAMDSEntity]:
         """
         Map O*NET knowledge data to KSAMDS knowledge entities.
-
-        UPDATED: Now extracts level data from 'Data Value LV' column and
-        tracks occupation-level requirements.
+        (Kept for Entity generation, but Relationship mapping is now the source of truth for dimensions)
         """
         logger.info("=" * 70)
         logger.info("MAPPING KNOWLEDGE ENTITIES WITH LEVELS")
@@ -334,42 +425,29 @@ class ONetMapper:
 
         df = self.onet_data['knowledge']
 
-        # Filter for importance (IM) >= 3.0
+        # Filter for IM and Data Value LV columns (assuming enrichment from extractor)
         df_filtered = df[(df['Scale ID'] == 'IM') & (df['Data Value'] >= 3.0)]
-        logger.info(
-            f"Filtered to {len(df_filtered)} knowledge records (IM >= 3.0) from {len(df)} total")
 
-        # Map similar entities to avoid duplicates
-        name_to_canonical = self.map_similar_entities(df_filtered)
+        # Group by Element Name/ID to get unique entities
+        unique_entities = df_filtered.groupby(['Element ID', 'Element Name']).agg({
+            'Data Value LV': 'mean' # Use mean level for the entity's level
+        }).reset_index()
+
+        name_to_canonical = self.map_similar_entities(unique_entities)
 
         knowledge_entities = {}
-        level_stats = defaultdict(int)
-
-        for _, row in df_filtered.iterrows():
+        for _, row in unique_entities.iterrows():
             element_name = row.get('Element Name', '')
             element_id = row.get('Element ID', '')
-            onet_soc = row.get('O*NET-SOC Code', '')
-            importance_score = row.get('Data Value', None)
-
-            # Get level value from enriched data
             lv_value = row.get('Data Value LV', None)
 
             canonical_name = name_to_canonical.get(element_name, element_name)
-            entity_id = generate_deterministic_uuid(
-                'knowledge', canonical_name)
-
-            # Map level value to category
-            level_category = self.map_level_value_to_category(lv_value, 'K')
-            level_stats[level_category] += 1
-
-            # Store occupation-entity level mapping
-            self.occupation_entity_levels[(
-                onet_soc, element_id)] = level_category
+            entity_id = generate_deterministic_uuid('knowledge', canonical_name)
+            self.onet_to_ksamds_ids[element_id] = entity_id
 
             if entity_id not in knowledge_entities:
                 ksamds_type = self.get_type_from_hierarchy(element_id)
-                job_zone = self.job_zone_lookup.get(onet_soc, 3)
-                basis_dims = self.get_basis_from_job_zone(job_zone)
+                level_category = self.map_level_value_to_category(lv_value, 'K') # Use mean level
 
                 knowledge = KSAMDSEntity(
                     id=entity_id,
@@ -377,32 +455,16 @@ class ONetMapper:
                     source_ref=element_id,
                     type_dims=[ksamds_type],
                     level_dims=[level_category],
-                    basis_dims=basis_dims
+                    # Basis is not derived here, will be populated on relationships
                 )
                 knowledge_entities[entity_id] = knowledge
-            else:
-                # Add level if not already present
-                if level_category not in knowledge_entities[entity_id].level_dims:
-                    knowledge_entities[entity_id].level_dims.append(
-                        level_category)
-
-            self.onet_to_ksamds_ids[element_id] = entity_id
 
         logger.info(
-            f"Mapped {len(knowledge_entities)} unique knowledge entities")
-        logger.info("Level distribution:")
-        for level, count in sorted(level_stats.items()):
-            logger.info(f"  {level}: {count}")
-
+            f"Mapped {len(knowledge_entities)} unique knowledge entities (Entity Level based on mean LV)")
         return knowledge_entities
 
     def map_skill_entities(self) -> Dict[str, KSAMDSEntity]:
-        """
-        Map O*NET skills data to KSAMDS skill entities.
-
-        UPDATED: Now extracts level data from 'Data Value LV' column and
-        tracks occupation-level requirements.
-        """
+        """Map O*NET skills data to KSAMDS skill entities (Entity Level based on mean LV)."""
         logger.info("=" * 70)
         logger.info("MAPPING SKILL ENTITIES WITH LEVELS")
         logger.info("=" * 70)
@@ -412,41 +474,25 @@ class ONetMapper:
             return {}
 
         df = self.onet_data['skills']
-
-        # Filter for importance (IM) >= 3.0
         df_filtered = df[(df['Scale ID'] == 'IM') & (df['Data Value'] >= 3.0)]
-        logger.info(
-            f"Filtered to {len(df_filtered)} skill records (IM >= 3.0) from {len(df)} total")
-
-        name_to_canonical = self.map_similar_entities(df_filtered)
-
+        unique_entities = df_filtered.groupby(['Element ID', 'Element Name']).agg({
+            'Data Value LV': 'mean'
+        }).reset_index()
+        name_to_canonical = self.map_similar_entities(unique_entities)
         skill_entities = {}
-        level_stats = defaultdict(int)
 
-        for _, row in df_filtered.iterrows():
+        for _, row in unique_entities.iterrows():
             element_name = row.get('Element Name', '')
             element_id = row.get('Element ID', '')
-            onet_soc = row.get('O*NET-SOC Code', '')
-            importance_score = row.get('Data Value', None)
-
-            # Get level value from enriched data
             lv_value = row.get('Data Value LV', None)
 
             canonical_name = name_to_canonical.get(element_name, element_name)
             entity_id = generate_deterministic_uuid('skill', canonical_name)
-
-            # Map level value to category
-            level_category = self.map_level_value_to_category(lv_value, 'S')
-            level_stats[level_category] += 1
-
-            # Store occupation-entity level mapping
-            self.occupation_entity_levels[(
-                onet_soc, element_id)] = level_category
+            self.onet_to_ksamds_ids[element_id] = entity_id
 
             if entity_id not in skill_entities:
                 ksamds_type = self.get_type_from_hierarchy(element_id)
-                job_zone = self.job_zone_lookup.get(onet_soc, 3)
-                basis_dims = self.get_basis_from_job_zone(job_zone)
+                level_category = self.map_level_value_to_category(lv_value, 'S')
 
                 skill = KSAMDSEntity(
                     id=entity_id,
@@ -454,30 +500,14 @@ class ONetMapper:
                     source_ref=element_id,
                     type_dims=[ksamds_type],
                     level_dims=[level_category],
-                    basis_dims=basis_dims
                 )
                 skill_entities[entity_id] = skill
-            else:
-                # Add level if not already present
-                if level_category not in skill_entities[entity_id].level_dims:
-                    skill_entities[entity_id].level_dims.append(level_category)
-
-            self.onet_to_ksamds_ids[element_id] = entity_id
 
         logger.info(f"Mapped {len(skill_entities)} unique skill entities")
-        logger.info("Level distribution:")
-        for level, count in sorted(level_stats.items()):
-            logger.info(f"  {level}: {count}")
-
         return skill_entities
 
     def map_ability_entities(self) -> Dict[str, KSAMDSEntity]:
-        """
-        Map O*NET abilities data to KSAMDS ability entities.
-
-        UPDATED: Now extracts level data from 'Data Value LV' column and
-        tracks occupation-level requirements.
-        """
+        """Map O*NET abilities data to KSAMDS ability entities (Entity Level based on mean LV)."""
         logger.info("=" * 70)
         logger.info("MAPPING ABILITY ENTITIES WITH LEVELS")
         logger.info("=" * 70)
@@ -487,41 +517,25 @@ class ONetMapper:
             return {}
 
         df = self.onet_data['abilities']
-
-        # Filter for importance (IM) >= 3.0
         df_filtered = df[(df['Scale ID'] == 'IM') & (df['Data Value'] >= 3.0)]
-        logger.info(
-            f"Filtered to {len(df_filtered)} ability records (IM >= 3.0) from {len(df)} total")
-
-        name_to_canonical = self.map_similar_entities(df_filtered)
-
+        unique_entities = df_filtered.groupby(['Element ID', 'Element Name']).agg({
+            'Data Value LV': 'mean'
+        }).reset_index()
+        name_to_canonical = self.map_similar_entities(unique_entities)
         ability_entities = {}
-        level_stats = defaultdict(int)
 
-        for _, row in df_filtered.iterrows():
+        for _, row in unique_entities.iterrows():
             element_name = row.get('Element Name', '')
             element_id = row.get('Element ID', '')
-            onet_soc = row.get('O*NET-SOC Code', '')
-            importance_score = row.get('Data Value', None)
-
-            # Get level value from enriched data
             lv_value = row.get('Data Value LV', None)
 
             canonical_name = name_to_canonical.get(element_name, element_name)
             entity_id = generate_deterministic_uuid('ability', canonical_name)
-
-            # Map level value to category
-            level_category = self.map_level_value_to_category(lv_value, 'A')
-            level_stats[level_category] += 1
-
-            # Store occupation-entity level mapping
-            self.occupation_entity_levels[(
-                onet_soc, element_id)] = level_category
+            self.onet_to_ksamds_ids[element_id] = entity_id
 
             if entity_id not in ability_entities:
                 ksamds_type = self.get_type_from_hierarchy(element_id)
-                job_zone = self.job_zone_lookup.get(onet_soc, 3)
-                basis_dims = self.get_basis_from_job_zone(job_zone)
+                level_category = self.map_level_value_to_category(lv_value, 'A')
 
                 ability = KSAMDSEntity(
                     id=entity_id,
@@ -529,26 +543,15 @@ class ONetMapper:
                     source_ref=element_id,
                     type_dims=[ksamds_type],
                     level_dims=[level_category],
-                    basis_dims=basis_dims
                 )
                 ability_entities[entity_id] = ability
-            else:
-                # Add level if not already present
-                if level_category not in ability_entities[entity_id].level_dims:
-                    ability_entities[entity_id].level_dims.append(
-                        level_category)
-
-            self.onet_to_ksamds_ids[element_id] = entity_id
 
         logger.info(f"Mapped {len(ability_entities)} unique ability entities")
-        logger.info("Level distribution:")
-        for level, count in sorted(level_stats.items()):
-            logger.info(f"  {level}: {count}")
-
         return ability_entities
 
     def map_task_entities(self) -> Dict[str, KSAMDSEntity]:
         """Map O*NET task statements to KSAMDS task entities."""
+        # ... (Same as original, used for ID mapping)
         logger.info("=" * 70)
         logger.info("MAPPING TASK ENTITIES")
         logger.info("=" * 70)
@@ -562,7 +565,8 @@ class ONetMapper:
 
         for _, row in df.iterrows():
             task_text = row.get('Task', '')
-            task_id_onet = f"TASK_{row.get('Task ID', '')}"
+            # Need to create a unique ONET ID for tasks from SOC Code and Task ID
+            task_id_onet = f"TASK_{row.get('O*NET-SOC Code', '')}_{row.get('Task ID', '')}"
 
             entity_id = generate_deterministic_uuid('task', task_text)
             self.onet_to_ksamds_ids[task_id_onet] = entity_id
@@ -575,8 +579,10 @@ class ONetMapper:
         logger.info(f"Mapped {len(tasks)} unique task entities")
         return tasks
 
+
     def map_function_entities(self) -> Dict[str, KSAMDSEntity]:
         """Map O*NET work activities to KSAMDS function entities."""
+        # ... (Same as original, used for ID mapping)
         logger.info("=" * 70)
         logger.info("MAPPING FUNCTION ENTITIES")
         logger.info("=" * 70)
@@ -587,9 +593,6 @@ class ONetMapper:
 
         df = self.onet_data['work_activities']
         df_filtered = df[(df['Scale ID'] == 'IM') & (df['Data Value'] >= 3.0)]
-
-        logger.info(
-            f"Filtered to {len(df_filtered)} function records (IM >= 3.0) from {len(df)} total")
 
         name_to_canonical = self.map_similar_entities(df_filtered)
 
@@ -613,6 +616,7 @@ class ONetMapper:
 
     def map_education_levels(self) -> Dict[str, KSAMDSEntity]:
         """Create standard education level entities."""
+        # ... (Same as original)
         logger.info("=" * 70)
         logger.info("CREATING EDUCATION LEVEL ENTITIES")
         logger.info("=" * 70)
@@ -637,215 +641,298 @@ class ONetMapper:
         return entities
 
     def save_mapped_entities(self) -> bool:
-        """Save all mapped entities and relationships to CSV files."""
-        logger.info("=" * 70)
-        logger.info("SAVING MAPPED ENTITIES")
-        logger.info("=" * 70)
+            """Save all mapped entities and relationships to CSV files (MODIFIED for robust relationship schema)."""
+            logger.info("=" * 70)
+            logger.info("SAVING MAPPED ENTITIES")
+            logger.info("=" * 70)
+            logger.info(f"Relationship keys: {list(self.ksamds_relationships.keys())}")
+            for k, v in self.ksamds_relationships.items():
+                logger.info(f"{k}: {len(v)} items")
 
-        try:
-            # Save core entities
-            for entity_type, entities in self.ksamds_entities.items():
-                if not entities:
-                    continue
-
-                rows = []
-                for entity in entities.values():
-                    row = {
-                        'id': entity.id,
-                        'name': entity.name,
-                        'source_ref': entity.source_ref,
-                        'type_dims': '|'.join(entity.type_dims) if entity.type_dims else '',
-                        'level_dims': '|'.join(entity.level_dims) if entity.level_dims else '',
-                        'basis_dims': '|'.join(entity.basis_dims) if entity.basis_dims else '',
-                        'environment_dims': '|'.join(entity.environment_dims) if entity.environment_dims else '',
-                        'mode_dims': '|'.join(entity.mode_dims) if entity.mode_dims else '',
-                        'physicality_dims': '|'.join(entity.physicality_dims) if entity.physicality_dims else '',
-                        'cognitive_dims': '|'.join(entity.cognitive_dims) if entity.cognitive_dims else ''
-                    }
-                    rows.append(row)
-
-                df = pd.DataFrame(rows)
-                csv_path = self.mapped_dir / f"{entity_type}_mapped.csv"
-                df.to_csv(csv_path, index=False)
-                logger.info(
-                    f"Saved {len(rows)} {entity_type} entities to {csv_path}")
-
-            # Save relationships
-            for rel_type, relationships in self.ksamds_relationships.items():
-                if not relationships:
-                    continue
-
-                # Check if relationships include OccupationRelationship objects
-                if relationships and isinstance(relationships[0], OccupationRelationship):
+            try:
+                # Save core entities (Entity files like knowledge_mapped.csv, occupation_mapped.csv, etc.)
+                for entity_type, entities in self.ksamds_entities.items():
+                    if not entities:
+                        continue
                     rows = []
-                    for rel in relationships:
+                    for entity in entities.values():
+                        description = ''
+                        if entity_type == 'occupation' and entity.type_dims:
+                            # Retrieve the description we stored in type_dims
+                            description = entity.type_dims[0]
                         row = {
-                            'occupation_id': rel.occupation_id,
-                            'entity_id': rel.entity_id,
-                            'level': rel.level if rel.level else '',
-                            'importance_score': rel.importance_score if rel.importance_score else ''
+                            'id': entity.id,
+                            'name': entity.name,
+                            'source_ref': entity.source_ref,
+                            'description': description,
+                            'type_dims': '|'.join(entity.type_dims) if entity.type_dims else '',
+                            'level_dims': '|'.join(entity.level_dims) if entity.level_dims else '',
+                            'basis_dims': '|'.join(entity.basis_dims) if entity.basis_dims else '',
+                            'environment_dims': '|'.join(entity.environment_dims) if entity.environment_dims else '',
+                            'mode_dims': '|'.join(entity.mode_dims) if entity.mode_dims else '',
+                            'physicality_dims': '|'.join(entity.physicality_dims) if entity.physicality_dims else '',
+                            'cognitive_dims': '|'.join(entity.cognitive_dims) if entity.cognitive_dims else ''
                         }
                         rows.append(row)
                     df = pd.DataFrame(rows)
-                else:
-                    # Simple tuple relationships
-                    df = pd.DataFrame(relationships, columns=[
-                                      'source_id', 'target_id'])
+                    csv_path = self.mapped_dir / f"{entity_type}_mapped.csv"
+                    df.to_csv(csv_path, index=False)
+                    logger.info(
+                        f"Saved {len(rows)} {entity_type} entities to {csv_path.name}")
 
-                csv_path = self.mapped_dir / f"{rel_type}_relationships.csv"
-                df.to_csv(csv_path, index=False)
-                logger.info(
-                    f"Saved {len(relationships)} {rel_type} relationships to {csv_path}")
+                # Save relationships (MODIFIED for robust column handling and loop logic)
+                for rel_type, relationships in self.ksamds_relationships.items():
+                    if not relationships:
+                        continue
+                    
+                    rows = []
+                    
+                    # 1. Handle OccupationRelationship types (KSA, Task, Function)
+                    if len(relationships) > 0 and isinstance(relationships[0], OccupationRelationship):
+                        
+                        if rel_type in ['occupation_knowledge', 'occupation_skills', 'occupation_abilities']:
+                            # KSA Relationships (All share the same dimension columns)
+                            for rel in relationships:
+                                rows.append({
+                                    'occupation_id': rel.occupation_id,
+                                    'entity_id': rel.entity_id,
+                                    'level': rel.level if rel.level else '',
+                                    'basis': rel.basis if rel.basis else '',
+                                    'type': rel.type if rel.type else '',
+                                    'importance_score': rel.importance_score if rel.importance_score is not None else '' # FIX: Check against None
+                                })
+                        
+                        elif rel_type == 'occupation_task':
+                            # Task Relationships
+                            for rel in relationships:
+                                rows.append({
+                                    'occupation_id': rel.occupation_id,
+                                    'entity_id': rel.entity_id,
+                                    'mode': rel.mode if rel.mode else '',
+                                    'environment': rel.environment if rel.environment else '',
+                                    'type': rel.type if rel.type else '', # Task Type
+                                    'importance_score': rel.importance_score if rel.importance_score is not None else ''
+                                })
+                                
+                        elif rel_type == 'occupation_function':
+                            # Function Relationships
+                            for rel in relationships:
+                                rows.append({
+                                    'occupation_id': rel.occupation_id,
+                                    'entity_id': rel.entity_id,
+                                    'physicality': rel.physicality if rel.physicality else '',
+                                    'cognitive': rel.cognitive if rel.cognitive else '',
+                                    'environment': rel.environment if rel.environment else '', # Function Environment
+                                    'importance_score': rel.importance_score if rel.importance_score is not None else '' # FIX: Added importance_score
+                                })
+                    
+                    # 2. Handle Simple Tuple Relationships (e.g., occupation_education)
+                    else:
+                        rows = relationships
+                        
+                    # 3. Save the DataFrame
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        # Rename columns for simple tuple relationships
+                        if not isinstance(relationships[0], OccupationRelationship) and df.columns[0] == 0:
+                             df.rename(columns={0: 'source_id', 1: 'target_id'}, inplace=True)
 
-            logger.info("All mapped data saved successfully")
-            return True
+                        # FIX: Renamed rel_type for Skills and Abilities to match loader expectation
+                        if rel_type == 'occupation_skills':
+                            csv_name = 'occupation_skills_relationships.csv'
+                        elif rel_type == 'occupation_abilities':
+                            csv_name = 'occupation_abilities_relationships.csv'
+                        else:
+                            csv_name = f"{rel_type}_relationships.csv"
+                            
+                        csv_path = self.mapped_dir / csv_name
+                        df.to_csv(csv_path, index=False)
+                        logger.info(
+                            f"Saved {len(relationships)} {rel_type} relationships to {csv_path.name}")
 
-        except Exception as e:
-            logger.error(f"Failed to save mapped entities: {e}")
-            return False
+                logger.info("All mapped data saved successfully")
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to save mapped entities: {e}")
+                return False
 
     def map_occupation_relationships(self) -> Dict[str, List]:
         """
-        Map occupation relationships to Knowledge, Skills, Abilities, Tasks, and Functions.
-
-        UPDATED: Now includes level tracking for K/S/A relationships using data
-        stored in self.occupation_entity_levels.
+        Map occupation relationships to KSA/Function/Task, populating dimensions
+        using the loaded embeddings and query data. (HEAVILY MODIFIED)
         """
         logger.info("=" * 70)
-        logger.info("MAPPING OCCUPATION RELATIONSHIPS WITH LEVELS")
+        logger.info("MAPPING OCCUPATION RELATIONSHIPS WITH ALL DIMENSIONS")
         logger.info("=" * 70)
-
+        task_ratings_df = self.onet_data.get('task_ratings')
         relationships = defaultdict(list)
+        
+        # --- KSA RELATIONSHIPS (with all dimensions) ---
+        for entity_type in ['knowledge', 'skills', 'abilities']:
+            df_key = entity_type
+            rel_type = f'occupation_{df_key}'
+            scope = df_key[0].upper()
+            basis_embeds, basis_names = self.taxonomy_embeds[f'{scope.lower()}_basis']
 
-        # KNOWLEDGE RELATIONSHIPS (with levels)
-        if 'knowledge' in self.onet_data:
-            df_filtered = self.onet_data['knowledge'][(self.onet_data['knowledge']['Scale ID'] == 'IM') &
-                                                      (self.onet_data['knowledge']['Data Value'] >= 3.0)]
-            logger.info(
-                f"Processing {len(df_filtered)} knowledge relationships (filtered from {len(self.onet_data['knowledge'])})")
+            if df_key in self.onet_data:
+                # Filter is already implicitly applied by the query data lookup (IM >= 3.0)
+                df_filtered = self.onet_data[df_key][(self.onet_data[df_key]['Scale ID'] == 'IM') &
+                                                     (self.onet_data[df_key]['Data Value'] >= 3.0)]
+                logger.info(f"Processing {len(df_filtered)} {df_key} relationships")
 
-            for _, row in df_filtered.iterrows():
-                onet_soc = row.get('O*NET-SOC Code', '')
-                element_id = row.get('Element ID', '')
-                importance_score = row.get('Data Value', None)
+                for _, row in df_filtered.iterrows():
+                    onet_soc = row.get('O*NET-SOC Code', '')
+                    element_id = row.get('Element ID', '')
+                    importance_score = row.get('Data Value', None)
 
-                occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
-                knowledge_ksamds_id = self.onet_to_ksamds_ids.get(element_id)
+                    # Lookup pre-embedded query and row data
+                    query_lookup_key = (onet_soc, element_id)
+                    lookup_result = self.query_lookups[df_key].get(query_lookup_key)
 
-                if occupation_ksamds_id and knowledge_ksamds_id:
-                    # Get the level requirement for this occupation-knowledge pair
-                    level = self.occupation_entity_levels.get(
-                        (onet_soc, element_id))
+                    if lookup_result:
+                        query_emb, row_data = lookup_result
+                        
+                        # NOTE: The correct importance_score for KSA is already in the original row/variable.
+                        # This block (lines 789-797) was incorrectly inserted from Task logic and must be removed.
+                        
+                        occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
+                        entity_ksamds_id = self.onet_to_ksamds_ids.get(element_id)
 
-                    rel = OccupationRelationship(
-                        occupation_id=occupation_ksamds_id,
-                        entity_id=knowledge_ksamds_id,
-                        level=level,
-                        importance_score=importance_score
-                    )
+                        if occupation_ksamds_id and entity_ksamds_id:
+                            # 1. Level (Derived from LV score in the query row data)
+                            lv_value = row_data.get('LV', np.nan)
+                            level_category = self.map_level_value_to_category(lv_value, scope)
+                            
+                            # 2. Basis (Derived from embedding match)
+                            basis_name = self.find_best_match(query_emb, basis_embeds, basis_names)
+                            
+                            # 3. Type (Derived from O*NET hierarchy in onet_mapper.py)
+                            type_name = self.get_type_from_hierarchy(element_id)
 
-                    # Avoid duplicates
-                    if not any(r.occupation_id == rel.occupation_id and
-                               r.entity_id == rel.entity_id
-                               for r in relationships['occupation_knowledge']):
-                        relationships['occupation_knowledge'].append(rel)
+                            rel = OccupationRelationship(
+                                occupation_id=occupation_ksamds_id,
+                                entity_id=entity_ksamds_id,
+                                level=level_category,
+                                basis=basis_name,
+                                type=type_name,
+                                importance_score=importance_score # Use the score from line 778
+                            )
+                            # Avoid duplicates by checking key columns only
+                            if not any(r.occupation_id == rel.occupation_id and r.entity_id == rel.entity_id
+                                       for r in relationships[rel_type]):
+                                relationships[rel_type].append(rel)
 
-        # SKILL RELATIONSHIPS (with levels)
-        if 'skills' in self.onet_data:
-            df_filtered = self.onet_data['skills'][(self.onet_data['skills']['Scale ID'] == 'IM') &
-                                                   (self.onet_data['skills']['Data Value'] >= 3.0)]
-            logger.info(
-                f"Processing {len(df_filtered)} skill relationships (filtered from {len(self.onet_data['skills'])})")
-
-            for _, row in df_filtered.iterrows():
-                onet_soc = row.get('O*NET-SOC Code', '')
-                element_id = row.get('Element ID', '')
-                importance_score = row.get('Data Value', None)
-
-                occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
-                skill_ksamds_id = self.onet_to_ksamds_ids.get(element_id)
-
-                if occupation_ksamds_id and skill_ksamds_id:
-                    level = self.occupation_entity_levels.get(
-                        (onet_soc, element_id))
-
-                    rel = OccupationRelationship(
-                        occupation_id=occupation_ksamds_id,
-                        entity_id=skill_ksamds_id,
-                        level=level,
-                        importance_score=importance_score
-                    )
-
-                    if not any(r.occupation_id == rel.occupation_id and
-                               r.entity_id == rel.entity_id
-                               for r in relationships['occupation_skill']):
-                        relationships['occupation_skill'].append(rel)
-
-        # ABILITY RELATIONSHIPS (with levels)
-        if 'abilities' in self.onet_data:
-            df_filtered = self.onet_data['abilities'][(self.onet_data['abilities']['Scale ID'] == 'IM') &
-                                                      (self.onet_data['abilities']['Data Value'] >= 3.0)]
-            logger.info(
-                f"Processing {len(df_filtered)} ability relationships (filtered from {len(self.onet_data['abilities'])})")
-
-            for _, row in df_filtered.iterrows():
-                onet_soc = row.get('O*NET-SOC Code', '')
-                element_id = row.get('Element ID', '')
-                importance_score = row.get('Data Value', None)
-
-                occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
-                ability_ksamds_id = self.onet_to_ksamds_ids.get(element_id)
-
-                if occupation_ksamds_id and ability_ksamds_id:
-                    level = self.occupation_entity_levels.get(
-                        (onet_soc, element_id))
-
-                    rel = OccupationRelationship(
-                        occupation_id=occupation_ksamds_id,
-                        entity_id=ability_ksamds_id,
-                        level=level,
-                        importance_score=importance_score
-                    )
-
-                    if not any(r.occupation_id == rel.occupation_id and
-                               r.entity_id == rel.entity_id
-                               for r in relationships['occupation_ability']):
-                        relationships['occupation_ability'].append(rel)
-
-        # TASK RELATIONSHIPS (no levels)
-        if 'task_statements' in self.onet_data:
-            logger.info(
-                f"Processing {len(self.onet_data['task_statements'])} task relationships from task_statements")
-
-            for _, row in self.onet_data['task_statements'].iterrows():
-                onet_soc = row.get('O*NET-SOC Code', '')
-                task_id = f"TASK_{row.get('Task ID', '')}"
-                occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
-                task_ksamds_id = self.onet_to_ksamds_ids.get(task_id)
-                if occupation_ksamds_id and task_ksamds_id:
-                    relationship = (occupation_ksamds_id, task_ksamds_id)
-                    if relationship not in relationships['occupation_task']:
-                        relationships['occupation_task'].append(relationship)
-
-        # FUNCTION RELATIONSHIPS (no levels)
+        # --- FUNCTION RELATIONSHIPS (with dimensions) ---
+        rel_type = 'occupation_function'
+        f_phys_embeds, f_phys_names = self.taxonomy_embeds['f_phys']
+        f_cog_embeds, f_cog_names = self.taxonomy_embeds['f_cog']
+        f_env_embeds, f_env_names = self.taxonomy_embeds['f_env']
+        
         if 'work_activities' in self.onet_data:
+            # Filter is already implicitly applied by the query data lookup (IM >= 3.0)
             df_filtered = self.onet_data['work_activities'][(self.onet_data['work_activities']['Scale ID'] == 'IM') &
                                                             (self.onet_data['work_activities']['Data Value'] >= 3.0)]
-            logger.info(
-                f"Processing {len(df_filtered)} function relationships (filtered from {len(self.onet_data['work_activities'])})")
+            logger.info(f"Processing {len(df_filtered)} function relationships")
 
             for _, row in df_filtered.iterrows():
                 onet_soc = row.get('O*NET-SOC Code', '')
                 element_id = row.get('Element ID', '')
-                occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
-                function_ksamds_id = self.onet_to_ksamds_ids.get(element_id)
-                if occupation_ksamds_id and function_ksamds_id:
-                    relationship = (occupation_ksamds_id, function_ksamds_id)
-                    if relationship not in relationships['occupation_function']:
-                        relationships['occupation_function'].append(
-                            relationship)
+                importance_score = row.get('Data Value', None)
 
-        # EDUCATION RELATIONSHIPS (no levels)
+                query_lookup_key = (onet_soc, element_id)
+                lookup_result = self.query_lookups['function'].get(query_lookup_key)
+
+                if lookup_result:
+                    query_emb, _ = lookup_result # No extra row data needed for functions
+                    
+                    occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
+                    function_ksamds_id = self.onet_to_ksamds_ids.get(element_id)
+
+                    if occupation_ksamds_id and function_ksamds_id:
+                        # Find dimensions using embeddings
+                        phys_name = self.find_best_match(query_emb, f_phys_embeds, f_phys_names)
+                        cog_name = self.find_best_match(query_emb, f_cog_embeds, f_cog_names)
+                        env_name = self.find_best_match(query_emb, f_env_embeds, f_env_names)
+
+                        rel = OccupationRelationship(
+                            occupation_id=occupation_ksamds_id,
+                            entity_id=function_ksamds_id,
+                            physicality=phys_name,
+                            cognitive=cog_name,
+                            environment=env_name,
+                            importance_score=importance_score
+                        )
+                        if not any(r.occupation_id == rel.occupation_id and r.entity_id == rel.entity_id
+                                   for r in relationships[rel_type]):
+                            relationships[rel_type].append(rel)
+
+        # --- TASK RELATIONSHIPS (with dimensions) ---
+        rel_type = 'occupation_task'
+        t_mode_embeds, t_mode_names = self.taxonomy_embeds['t_mode']
+        t_env_embeds, t_env_names = self.taxonomy_embeds['t_env']
+        
+        if 'task_statements' in self.onet_data:
+            task_df = self.onet_data['task_statements']
+            logger.info(f"Processing {len(task_df)} task relationships")
+            
+            # The query lookup contains only IM >= 3.0 tasks, so we iterate over the task lookup keys
+            for (onet_soc, task_text), lookup_result in self.query_lookups['task'].items():
+                query_emb, task_type = lookup_result
+                
+                # Find the unique O*NET task ID (SOC+Task ID) that corresponds to this SOC and Task Text
+                # Use a merged dataframe or direct lookup if needed, but for simplicity, we rely on the
+                # unique task text for a given SOC to map back to the unique Task entity ID.
+                # Since the task entity ID was created using (SOC_Code, Task ID), we need to find the Task ID.
+                
+                task_match = task_df[(task_df['O*NET-SOC Code'] == onet_soc) & 
+                                     (task_df['Task'] == task_text)]
+                                     
+                if not task_match.empty:
+                    task_id = task_match.iloc[0]['Task ID']
+                    task_id_onet = f"TASK_{onet_soc}_{task_id}"
+
+                    # --- START OF MODIFICATION ---
+                    # Look up the importance score from task_ratings
+                    importance_score = None
+                    if task_ratings_df is not None:
+                        # Find the 'IM' (Importance) score
+                        rating_row = task_ratings_df[
+                            (task_ratings_df['O*NET-SOC Code'] == onet_soc) &
+                            (task_ratings_df['Task ID'] == task_id) &
+                            (task_ratings_df['Scale ID'] == 'IM')
+                        ]
+                        if not rating_row.empty:
+                            importance_score = rating_row.iloc[0]['Data Value']
+                    # --- END OF MODIFICATION ---
+
+                    occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
+                    task_ksamds_id = self.onet_to_ksamds_ids.get(task_id_onet)
+                    
+                    if occupation_ksamds_id and task_ksamds_id:
+                        # 1. Type (Directly from task_type in query data)
+                        type_name = task_type
+                        
+                        # 2. Mode and Environment (Derived from embedding match)
+                        mode_name = self.find_best_match(query_emb, t_mode_embeds, t_mode_names)
+                        env_name = self.find_best_match(query_emb, t_env_embeds, t_env_names)
+
+                        rel = OccupationRelationship(
+                            occupation_id=occupation_ksamds_id,
+                            entity_id=task_ksamds_id,
+                            type=type_name,
+                            mode=mode_name,
+                            environment=env_name,
+                            importance_score=importance_score # <--MODIFIED
+                        )
+                        if not any(r.occupation_id == rel.occupation_id and r.entity_id == rel.entity_id
+                                   for r in relationships[rel_type]):
+                            relationships[rel_type].append(rel)
+                else:
+                    logger.warning(f"Could not find Task ID for SOC: {onet_soc} and Task Text: {task_text[:30]}...")
+
+
+        # --- EDUCATION RELATIONSHIPS (No change) ---
         if 'job_zones' in self.onet_data:
             job_zone_to_education = {
                 1: "High School", 2: "High School", 3: "Some College",
@@ -870,37 +957,34 @@ class ONetMapper:
                         if relationship not in relationships['occupation_education']:
                             relationships['occupation_education'].append(
                                 relationship)
-
+                            
         for rel_type, rel_list in relationships.items():
             logger.info(f"Mapped {len(rel_list)} {rel_type} relationships")
 
         return relationships
 
+
     def cleanup_intermediate_files(self):
         """
         Clean up intermediate O*NET CSV files after mapping is complete.
         """
+        # ... (Same as original)
         logger.info("Cleaning up intermediate O*NET CSV files...")
 
         # Clean up the intermediate directory
         if self.processed_dir.exists() and self.processed_dir.parts[-1] == 'intermediate':
             try:
                 file_count = len(list(self.processed_dir.glob('*.csv')))
+                # Do not remove the embeddings folder
                 shutil.rmtree(self.processed_dir)
                 logger.info(
                     f"Removed {file_count} intermediate CSV files from {self.processed_dir}")
             except Exception as e:
                 logger.warning(f"Failed to clean up intermediate files: {e}")
 
-    def map_all_entities(self, cleanup_after: bool = True) -> bool:
+    def map_all_entities(self, cleanup_after: bool = False) -> bool:
         """
         Map all O*NET entities to KSAMDS structure.
-
-        Args:
-            cleanup_after: Whether to clean up intermediate files after mapping
-
-        Returns:
-            bool: True if successful
         """
         logger.info("=" * 70)
         logger.info("STARTING O*NET TO KSAMDS MAPPING")
@@ -908,9 +992,15 @@ class ONetMapper:
 
         if not self.load_onet_data():
             return False
+            
+        if not self._load_onet_embeddings():
+            logger.error("Failed to load embeddings/query data. Halting.")
+            return False
+            
         if not self.build_hierarchy_mappings():
             return False
 
+        # Map Entities
         self.ksamds_entities['occupation'] = self.map_occupation_entities()
         self.ksamds_entities['knowledge'] = self.map_knowledge_entities()
         self.ksamds_entities['skill'] = self.map_skill_entities()
@@ -919,6 +1009,7 @@ class ONetMapper:
         self.ksamds_entities['function'] = self.map_function_entities()
         self.ksamds_entities['education_level'] = self.map_education_levels()
 
+        # Map Relationships (Now includes dimension-finding logic)
         self.ksamds_relationships = self.map_occupation_relationships()
 
         if not self.save_mapped_entities():
@@ -954,7 +1045,8 @@ def main():
     """Main function to run the O*NET mapper."""
     # Initialize mapper
     mapper = ONetMapper()
-    success = mapper.map_all_entities(cleanup_after=True)
+    # Assuming embeddings have already been generated by onet_embedding_generator.py
+    success = mapper.map_all_entities(cleanup_after=False) 
 
     if success:
         summary = mapper.get_mapping_summary()
@@ -972,7 +1064,7 @@ def main():
             if count > 0:
                 logger.info(f"{entity_type.upper()}: {count} entities mapped")
 
-        logger.info("\nRELATIONSHIP MAPPING RESULTS")
+        logger.info("\nRELATIONSHIP MAPPING RESULTS (Including Dimensions)")
         logger.info("-" * 70)
         for rel_type, count in summary['relationships'].items():
             if count > 0:

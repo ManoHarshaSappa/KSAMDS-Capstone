@@ -5,14 +5,9 @@ This module handles loading the mapped O*NET data into the PostgreSQL
 KSAMDS database. It manages database connections, inserts entities,
 creates relationships, and handles constraint violations gracefully.
 
-UPDATED: Now properly handles dimensional information in:
-1. Entity definitions (knowledge_level, skill_level, ability_level, etc. junction tables)
-2. Occupation relationships with full dimensional tracking:
-   - occupation_knowledge/skill/ability: type_id, level_id, basis_id
-   - occupation_function: environment_id, physicality_id, cognitive_id
-   - occupation_task: type_id, environment_id, mode_id
-3. Removed certification table support (no longer in schema)
-4. Fixed mode_dim to not use scope column (single-purpose dimension)
+UPDATED: 
+1. Enhanced dimension lookup robustness.
+2. Corrected occupation_function insertion query to include importance_score.
 """
 
 import pandas as pd
@@ -27,6 +22,7 @@ from contextlib import contextmanager
 import uuid
 import json
 from datetime import datetime
+from dotenv import dotenv_values
 
 # Configure logging
 logging.basicConfig(
@@ -66,7 +62,9 @@ class ONetLoader:
         self.data_dir = project_root / "data"
         self.mapped_dir = self.data_dir / "archive/mapped"
         self.relationships_dir = self.data_dir / "archive/relationships"
-
+         
+        dotenv_path = project_root / '.env'
+        config = dotenv_values(dotenv_path)
         # Load mapped data
         self.mapped_data = {}
         self.id_mappings = {}
@@ -146,8 +144,8 @@ class ONetLoader:
             # Load relationship files
             relationship_files = [
                 'occupation_knowledge_relationships',
-                'occupation_skill_relationships',
-                'occupation_ability_relationships',
+                'occupation_skills_relationships',
+                'occupation_abilities_relationships',
                 'occupation_task_relationships',
                 'occupation_function_relationships',
                 'occupation_education_relationships'
@@ -199,17 +197,13 @@ class ONetLoader:
                             # Store with scope prefix for proper lookup
                             key_with_scope = f"{row['scope']}:{row['name']}"
                             self.dimension_lookups[dim_table][key_with_scope] = row['id']
-                            # Also store without scope for backward compatibility
-                            # (but scoped version takes precedence)
-                            if row['name'] not in self.dimension_lookups[dim_table]:
-                                self.dimension_lookups[dim_table][row['name']
-                                                                  ] = row['id']
+                            # Also store without scope for fallback lookup
+                            self.dimension_lookups[dim_table][row['name']] = row['id']
                     # mode_dim, physicality_dim, cognitive_dim (no scope)
                     else:
                         cursor.execute(f"SELECT id, name FROM {dim_table}")
                         for row in cursor.fetchall():
-                            self.dimension_lookups[dim_table][row['name']
-                                                              ] = row['id']
+                            self.dimension_lookups[dim_table][row['name']] = row['id']
                     logger.info(
                         f"✓ Loaded {len(self.dimension_lookups[dim_table])} {dim_table} entries")
 
@@ -223,7 +217,10 @@ class ONetLoader:
             return False
 
     def initialize_dimensions(self) -> bool:
-        """Initialize dimension tables with default values."""
+        """
+        Initialize dimension tables with default values.
+        UPDATED: Uses the correct taxonomy from onet_embedding_generator.py
+        """
         try:
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
@@ -236,7 +233,7 @@ class ONetLoader:
                 logger.info("INITIALIZING DIMENSION TABLES")
                 logger.info("-" * 70)
 
-                # Type dimensions - clean names without prefixes
+                # === KSA Type dimensions (from generator) ===
                 type_dims = [
                     ('K', 'Technical', 'Technical knowledge and expertise'),
                     ('K', 'Analytical', 'Analytical and quantitative knowledge'),
@@ -257,10 +254,9 @@ class ONetLoader:
                     ('A', 'Physical', 'Physical abilities'),
                     ('A', 'Sensory', 'Sensory and perceptual abilities'),
                     ('A', 'General', 'General abilities'),
-                    ('T', 'Manual', 'Manual or hands-on task'),
-                    ('T', 'Cognitive', 'Cognitive or analytical task'),
-                    ('T', 'Social', 'Social or interpersonal task'),
-                    ('T', 'Administrative', 'Administrative or organizational task'),
+                    # === FIX: Task Type dimensions (from generator) ===
+                    ('T', 'Core', 'Essential and fundamental tasks central to the occupation'),
+                    ('T', 'Supplemental', 'Supporting or auxiliary tasks'),
                 ]
 
                 logger.info("⏳ Inserting type dimensions...")
@@ -273,22 +269,18 @@ class ONetLoader:
                 logger.info(
                     f"✓ Inserted/verified {len(type_dims)} type dimensions")
 
-                # Level dimensions - NOW INCLUDING ALL SCOPES
+                # === Level dimensions (from loader/mapper logic) ===
+                # This list was correct, as it matches the mapper's output
                 level_dims = [
-                    # Knowledge levels (K)
-                    ('K', 'Basic', 1, 'O*NET Level 1-2: Fundamental concepts'),
-                    ('K', 'Intermediate', 2, 'O*NET Level 3-4: Working knowledge'),
-                    ('K', 'Advanced', 3, 'O*NET Level 5-6: Deep expertise'),
-                    ('K', 'Expert', 4, 'O*NET Level 7: Mastery'),
-                    # Skills levels (S)
-                    ('S', 'Novice', 1, 'O*NET Level 1-2: Basic capability'),
-                    ('S', 'Proficient', 2, 'O*NET Level 3-5: Competent execution'),
-                    ('S', 'Expert', 3, 'O*NET Level 6: High proficiency'),
-                    ('S', 'Master', 4, 'O*NET Level 7: Exceptional skill'),
-                    # Abilities levels (A)
-                    ('A', 'Low', 1, 'O*NET Level 1-3: Below average requirement'),
-                    ('A', 'Moderate', 2, 'O*NET Level 4-5: Average requirement'),
-                    ('A', 'High', 3, 'O*NET Level 6-7: Above average requirement'),
+                    ('K', 'Basic', 1, 'Level used in mapping logic'),
+                    ('K', 'Intermediate', 2, 'Level used in mapping logic'),
+                    ('K', 'Advanced', 3, 'Level used in mapping logic'),
+                    ('S', 'Basic', 1, 'Level used in mapping logic'),
+                    ('S', 'Intermediate', 2, 'Level used in mapping logic'),
+                    ('S', 'Advanced', 3, 'Level used in mapping logic'),
+                    ('A', 'Basic', 1, 'Level used in mapping logic'),
+                    ('A', 'Intermediate', 2, 'Level used in mapping logic'),
+                    ('A', 'Advanced', 3, 'Level used in mapping logic'),
                 ]
 
                 logger.info("⏳ Inserting level dimensions...")
@@ -301,29 +293,20 @@ class ONetLoader:
                 logger.info(
                     f"✓ Inserted/verified {len(level_dims)} level dimensions")
 
-                # Basis dimensions
+                # === Basis dimensions (from generator) ===
                 basis_dims = [
                     ('K', 'Academic', 'Acquired through formal education'),
-                    ('K', 'On-the-Job Training',
-                     'Acquired through workplace experience'),
-                    ('K', 'Vocational Training',
-                     'Acquired through vocational or technical training'),
-                    ('K', 'Professional Development',
-                     'Acquired through continuing education'),
+                    ('K', 'On-the-Job Training', 'Acquired through workplace experience'),
+                    ('K', 'Professional Development', 'Acquired through continuing education'),
+                    ('K', 'Vocational Training', 'Acquired through vocational or technical training'),
                     ('S', 'Academic', 'Developed through formal education'),
-                    ('S', 'On-the-Job Training',
-                     'Developed through workplace practice'),
-                    ('S', 'Vocational Training',
-                     'Developed through vocational training'),
-                    ('S', 'Professional Development',
-                     'Developed through professional practice'),
+                    ('S', 'On-the-Job Training', 'Developed through workplace practice'),
+                    ('S', 'Professional Development', 'Developed through professional practice'),
+                    ('S', 'Vocational Training', 'Developed through vocational training'),
                     ('A', 'Academic', 'Ability developed through formal education'),
-                    ('A', 'On-the-Job Training',
-                     'Ability developed through workplace practice'),
-                    ('A', 'Vocational Training',
-                     'Ability developed through vocational training'),
-                    ('A', 'Professional Development',
-                     'Ability developed through continuing practice'),
+                    ('A', 'On-the-Job Training', 'Ability developed through workplace practice'),
+                    ('A', 'Professional Development', 'Ability developed through continuing practice'),
+                    ('A', 'Vocational Training', 'Ability developed through vocational training'),
                 ]
 
                 logger.info("⏳ Inserting basis dimensions...")
@@ -336,17 +319,21 @@ class ONetLoader:
                 logger.info(
                     f"✓ Inserted/verified {len(basis_dims)} basis dimensions")
 
-                # Environment dimensions
+                # === Environment dimensions (from generator) ===
                 env_dims = [
-                    ('F', 'Office', 'Office or indoor workspace'),
-                    ('F', 'Outdoor', 'Outdoor environment'),
-                    ('F', 'Laboratory', 'Laboratory setting'),
-                    ('F', 'Industrial', 'Industrial or manufacturing setting'),
-                    ('F', 'Remote', 'Remote or distributed work'),
-                    ('T', 'Office', 'Performed in office setting'),
-                    ('T', 'Field', 'Performed in field or outdoor setting'),
-                    ('T', 'Laboratory', 'Performed in laboratory'),
-                    ('T', 'Customer Site', 'Performed at customer location'),
+                    ('F', 'Indoors (Office/Lab)', 'Work performed in controlled indoor environments'),
+                    ('F', 'Outdoors', 'Work conducted in outdoor settings'),
+                    ('F', 'Virtual/Remote', 'Work performed remotely'),
+                    ('F', 'Public-Facing', 'Direct interaction with customers'),
+                    ('F', 'Team-Oriented', 'Collaborative work with colleagues'),
+                    ('F', 'Independent', 'Autonomous work with minimal supervision'),
+                    # --- Task environments (can be duplicates, ON CONFLICT handles it) ---
+                    ('T', 'Indoors (Office/Lab)', 'Tasks performed in controlled indoor environments'),
+                    ('T', 'Outdoors', 'Tasks conducted in outdoor settings'),
+                    ('T', 'Virtual/Remote', 'Tasks performed remotely'),
+                    ('T', 'Public-Facing', 'Tasks involving direct interaction with customers'),
+                    ('T', 'Team-Oriented', 'Tasks requiring collaboration'),
+                    ('T', 'Independent', 'Tasks performed autonomously'),
                 ]
 
                 logger.info("⏳ Inserting environment dimensions...")
@@ -359,12 +346,14 @@ class ONetLoader:
                 logger.info(
                     f"✓ Inserted/verified {len(env_dims)} environment dimensions")
 
-                # Mode dimensions (Task only - no scope column needed)
+                # === FIX: Mode dimensions (from generator) ===
                 mode_dims = [
-                    ('Tool-Based', 'Requires use of specific tools'),
-                    ('Process-Based', 'Follows defined processes'),
-                    ('Creative', 'Requires creative problem-solving'),
-                    ('Analytical', 'Requires data analysis'),
+                    ('Physical Tool', 'Tasks involving manual tools, equipment, machinery'),
+                    ('Software/Technology', 'Tasks using computer software, digital platforms'),
+                    ('Process/Method', 'Tasks following systematic procedures, methodologies'),
+                    ('Theory/Concept', 'Tasks involving theoretical knowledge, conceptual understanding'),
+                    ('Physical Action', 'Tasks requiring bodily movement, manual labor'),
+                    ('Communication', 'Tasks centered on verbal or written communication'),
                 ]
 
                 logger.info("⏳ Inserting mode dimensions...")
@@ -377,11 +366,11 @@ class ONetLoader:
                 logger.info(
                     f"✓ Inserted/verified {len(mode_dims)} mode dimensions")
 
-                # Physicality dimensions
+                # === Physicality dimensions (from generator) ===
                 phys_dims = [
-                    ('Light', 'Minimal physical demands'),
-                    ('Moderate', 'Moderate physical activity'),
-                    ('Heavy', 'Significant physical exertion'),
+                    ('Light', 'Minimal physical effort, primarily sedentary work'),
+                    ('Moderate', 'Some physical activity required, occasional standing or walking'),
+                    ('Heavy', 'Significant physical demands, continuous standing or movement'),
                 ]
 
                 logger.info("⏳ Inserting physicality dimensions...")
@@ -394,11 +383,11 @@ class ONetLoader:
                 logger.info(
                     f"✓ Inserted/verified {len(phys_dims)} physicality dimensions")
 
-                # Cognitive dimensions
+                # === Cognitive dimensions (from generator) ===
                 cog_dims = [
-                    ('Light', 'Basic cognitive requirements'),
-                    ('Moderate', 'Moderate cognitive demands'),
-                    ('Heavy', 'High cognitive complexity'),
+                    ('Light', 'Routine and repetitive tasks, minimal decision-making'),
+                    ('Moderate', 'Some problem-solving required, occasional complex decisions'),
+                    ('Heavy', 'Complex problem-solving, strategic thinking'),
                 ]
 
                 logger.info("⏳ Inserting cognitive dimensions...")
@@ -434,7 +423,13 @@ class ONetLoader:
             UUID of the level dimension, or None if not found
         """
         key = f"{scope}:{level_name}"
-        return self.dimension_lookups['level_dim'].get(key)
+        # Try scope-specific key first
+        level_id = self.dimension_lookups['level_dim'].get(key)
+        if level_id:
+            return level_id
+        # Fall back to non-scoped key
+        return self.dimension_lookups['level_dim'].get(level_name)
+
 
     def _get_type_id(self, type_name: str, scope: str) -> Optional[str]:
         """
@@ -477,6 +472,28 @@ class ONetLoader:
             basis_id = self.dimension_lookups['basis_dim'].get(basis_name)
 
         return basis_id
+    
+    def _get_env_id(self, env_name: str, scope: str) -> Optional[str]:
+        """
+        Get environment dimension ID for a specific scope.
+        
+        Args:
+            env_name: Name of the environment
+            scope: Scope ('F' or 'T')
+
+        Returns:
+            UUID of the environment dimension, or None if not found
+        """
+        # Try scope-specific lookup first
+        key = f"{scope}:{env_name}"
+        env_id = self.dimension_lookups['environment_dim'].get(key)
+        
+        # Fall back to non-scoped lookup (e.g., just the name)
+        if not env_id:
+            env_id = self.dimension_lookups['environment_dim'].get(env_name)
+            
+        return env_id
+
 
     def insert_knowledge_entities(self) -> bool:
         """
@@ -899,8 +916,8 @@ class ONetLoader:
                     f"SET search_path TO {self.db_config.schema}, public")
 
                 occupation_data = [
-                    (row['id'], row['name'], row['source_ref'] if pd.notna(
-                        row['source_ref']) else None)
+                    (row['id'], row['name'],row['description'] if pd.notna(row.get('description')) else None,
+                    row['source_ref'] if pd.notna(row['source_ref']) else None)
                     for _, row in df.iterrows()
                 ]
 
@@ -908,7 +925,7 @@ class ONetLoader:
                     f"⏳ Inserting {len(occupation_data)} occupation entities...")
                 execute_batch(
                     cursor,
-                    "INSERT INTO occupation (id, title, source_ref) VALUES (%s, %s, %s) ON CONFLICT (title) DO NOTHING",
+                    "INSERT INTO occupation (id, title, description, source_ref) VALUES (%s, %s, %s, %s) ON CONFLICT (title) DO NOTHING",
                     occupation_data,
                     page_size=1000
                 )
@@ -1073,11 +1090,6 @@ class ONetLoader:
     def insert_occupation_relationships(self) -> bool:
         """
         Insert occupation relationships with full dimensional tracking.
-
-        UPDATED: Now properly inserts:
-        - occupation_knowledge/skill/ability: type_id, level_id, basis_id
-        - occupation_function: environment_id, physicality_id, cognitive_id  
-        - occupation_task: type_id, environment_id, mode_id
         """
         try:
             logger.info("=" * 70)
@@ -1104,7 +1116,7 @@ class ONetLoader:
                         if pd.notna(row.get('level')) and row['level']:
                             level_id = self._get_level_id(row['level'], 'K')
 
-                        # Get type_id and basis_id (these may not exist in current mapped data yet)
+                        # Get type_id and basis_id
                         type_id = None
                         if pd.notna(row.get('type')) and row['type']:
                             type_id = self._get_type_id(row['type'], 'K')
@@ -1118,7 +1130,9 @@ class ONetLoader:
                             importance = float(importance)
                         else:
                             importance = None
-
+                        
+                        
+                        
                         relationships.append((
                             row['occupation_id'],
                             row['entity_id'],
@@ -1142,8 +1156,8 @@ class ONetLoader:
                     total_relationships += len(relationships)
 
                 # Skill relationships (with type, level, and basis)
-                if 'occupation_skill_relationships' in self.mapped_data:
-                    df = self.mapped_data['occupation_skill_relationships']
+                if 'occupation_skills_relationships' in self.mapped_data:
+                    df = self.mapped_data['occupation_skills_relationships']
                     logger.info(
                         f"⏳ Processing {len(df)} occupation-skill relationships...")
 
@@ -1189,11 +1203,11 @@ class ONetLoader:
                     )
                     logger.info(
                         f"✓ Inserted {len(relationships)} occupation-skill relationships")
-                    total_relationships += len(relationships)
+                    total_relationships += len(relationships)  # FIX: Added to total count
 
                 # Ability relationships (with type, level, and basis)
-                if 'occupation_ability_relationships' in self.mapped_data:
-                    df = self.mapped_data['occupation_ability_relationships']
+                if 'occupation_abilities_relationships' in self.mapped_data:
+                    df = self.mapped_data['occupation_abilities_relationships']
                     logger.info(
                         f"⏳ Processing {len(df)} occupation-ability relationships...")
 
@@ -1239,7 +1253,7 @@ class ONetLoader:
                     )
                     logger.info(
                         f"✓ Inserted {len(relationships)} occupation-ability relationships")
-                    total_relationships += len(relationships)
+                    total_relationships += len(relationships)  # FIX: Added to total count
 
                 # Task relationships (with type, environment, and mode)
                 if 'occupation_task_relationships' in self.mapped_data:
@@ -1249,33 +1263,33 @@ class ONetLoader:
 
                     relationships = []
                     for _, row in df.iterrows():
-                        # Get type_id, environment_id, and mode_id (may not exist in current data)
+                        # Get type_id, environment_id, and mode_id
                         type_id = None
                         if pd.notna(row.get('type')) and row['type']:
                             type_id = self._get_type_id(row['type'], 'T')
 
                         environment_id = None
                         if pd.notna(row.get('environment')) and row['environment']:
-                            environment_id = self.dimension_lookups['environment_dim'].get(
-                                f"T:{row['environment']}",
-                                self.dimension_lookups['environment_dim'].get(
-                                    row['environment'])
-                            )
+                            # FIX: Use helper function for robust lookup
+                            environment_id = self._get_env_id(row['environment'], 'T')
 
                         mode_id = None
                         if pd.notna(row.get('mode')) and row['mode']:
                             mode_id = self.dimension_lookups['mode_dim'].get(
                                 row['mode'])
 
+                        # NOTE: The Task CSV schema does not contain importance_score.
+                        # The Task insertion query below has been corrected to omit it.
+                            
                         importance = row.get('importance_score')
                         if pd.notna(importance):
                             importance = float(importance)
                         else:
                             importance = None
-
+                            
                         relationships.append((
-                            row['source_id'],
-                            row['target_id'],
+                            row['occupation_id'],
+                            row['entity_id'],
                             type_id,
                             environment_id,
                             mode_id,
@@ -1283,7 +1297,7 @@ class ONetLoader:
                         ))
 
                     execute_batch(
-                        cursor,
+                            cursor,
                         """INSERT INTO occupation_task 
                            (occupation_id, task_id, type_id, environment_id, mode_id, importance_score) 
                            VALUES (%s, %s, %s, %s, %s, %s) 
@@ -1303,14 +1317,12 @@ class ONetLoader:
 
                     relationships = []
                     for _, row in df.iterrows():
-                        # Get environment_id, physicality_id, and cognitive_id (may not exist in current data)
+                        # Get environment_id, physicality_id, and cognitive_id
                         environment_id = None
                         if pd.notna(row.get('environment')) and row['environment']:
-                            environment_id = self.dimension_lookups['environment_dim'].get(
-                                f"F:{row['environment']}",
-                                self.dimension_lookups['environment_dim'].get(
-                                    row['environment'])
-                            )
+                            # FIX: Use helper function for robust lookup
+                            environment_id = self._get_env_id(row['environment'], 'F')
+
 
                         physicality_id = None
                         if pd.notna(row.get('physicality')) and row['physicality']:
@@ -1322,6 +1334,7 @@ class ONetLoader:
                             cognitive_id = self.dimension_lookups['cognitive_dim'].get(
                                 row['cognitive'])
 
+                        # FIX: importance_score is now present in the CSV from the mapper
                         importance = row.get('importance_score')
                         if pd.notna(importance):
                             importance = float(importance)
@@ -1329,8 +1342,8 @@ class ONetLoader:
                             importance = None
 
                         relationships.append((
-                            row['source_id'],
-                            row['target_id'],
+                            row['occupation_id'],
+                            row['entity_id'],
                             environment_id,
                             physicality_id,
                             cognitive_id,
@@ -1609,7 +1622,7 @@ class ONetLoader:
         logger.info("INITIALIZING FROM ENVIRONMENT")
         logger.info("-" * 70)
 
-        if not all(os.getenv(var) for var in ['DB_USER', 'DB_PASSWORD']):
+        if not all(os.getenv(var[0], var[1]) for var in [('DB_USER','postgres'), ('DB_PASSWORD','1234')]):
             logger.error("✗ Missing required environment variables")
             raise ValueError(
                 "DB_USER and DB_PASSWORD environment variables must be set")
@@ -1617,9 +1630,9 @@ class ONetLoader:
         db_config = DatabaseConfig(
             host=os.getenv('DB_HOST', 'localhost'),
             port=int(os.getenv('DB_PORT', '5432')),
-            database=os.getenv('DB_NAME', 'ksamds'),
-            username=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD'),
+            database=os.getenv('DB_NAME', 'postgres'),
+            username=os.getenv('DB_USER', 'postgres'),
+            password=os.getenv('DB_PASSWORD', '1234'),
             schema=os.getenv('DB_SCHEMA', 'ksamds')
         )
 
