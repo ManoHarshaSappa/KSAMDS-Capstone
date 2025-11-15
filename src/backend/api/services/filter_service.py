@@ -115,63 +115,51 @@ def get_dimension_options(
     entity_type: str
 ) -> List[DimensionOption]:
     """
-    Get all options for a dimension that are actually used by entities
-    Only returns dimension values that have been assigned to at least one entity
-
-    Args:
-        db: Database session
-        dimension_name: Name of dimension (e.g., 'type', 'level')
-        entity_type: Entity type (e.g., 'knowledge')
-
-    Returns:
-        List of DimensionOption objects
+    Get all options for a dimension (without counts)
     """
     dim_meta = DIMENSION_CONFIG[dimension_name]
     entity_config = ENTITY_CONFIG[entity_type]
     entity_scope = entity_config["scope"]
-    entity_table = entity_config["table"]
 
     # Get dimension table name
     dim_table = dim_meta.table_name
 
-    # Get junction table name
-    junction_table = get_junction_table_name(entity_type, dimension_name)
-
-    # Determine the foreign key column name in the junction table
-    if dimension_name == "environment":
-        dimension_fk = "environment_id"
-    else:
-        dimension_fk = f"{dimension_name}_id"
-
-    # Dimensions without scope: mode, physicality, cognitive
-    if len(dim_meta.scope) == 0:
+    # Special handling for physicality and cognitive (no scope filter)
+    if dimension_name in ["physicality", "cognitive", "mode"]:
         query = f"""
-            SELECT DISTINCT d.id, d.name
-            FROM {dim_table} d
-            INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
-            ORDER BY d.name
+            SELECT id, name
+            FROM {dim_table}
+            ORDER BY name
         """
-        params = {}
+        params = None
     else:
-        # Dimensions with scope: type, level, basis, environment
+        # Regular dimensions with scope filtering
         query = f"""
-            SELECT DISTINCT d.id, d.name
-            FROM {dim_table} d
-            INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
-            WHERE d.scope = :scope
-            ORDER BY d.name
+            SELECT id, name
+            FROM {dim_table}
+            WHERE scope = :scope
+            ORDER BY name
         """
         params = {"scope": entity_scope}
 
     try:
-        results = fetch_all(db, query, params)
+        logger.info(
+            f"Loading {dimension_name} for {entity_type} (scope: {entity_scope})")
+        logger.debug(f"Query: {query}, Params: {params}")
+
+        if params:
+            results = fetch_all(db, query, params)
+        else:
+            results = fetch_all(db, query)
+
+        logger.info(f"Found {len(results)} options for {dimension_name}")
 
         options = []
         for row in results:
             options.append(DimensionOption(
                 value=row["name"],
                 label=row["name"],
-                count=0  # Not calculated
+                count=0
             ))
 
         return options
@@ -179,6 +167,8 @@ def get_dimension_options(
     except Exception as e:
         logger.error(
             f"Error loading dimension '{dimension_name}' for '{entity_type}': {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
@@ -264,8 +254,11 @@ def validate_filter_values(
     filters: Dict[str, List[str]]
 ) -> Dict[str, List[str]]:
     """
-    Validate that filter values exist in the database
+    Validate that filter values exist in the occupation junction tables
     Remove invalid values and log warnings
+
+    Checks the occupation-entity junction tables (occupation_knowledge, occupation_skill, etc.)
+    to ensure the filter values are actually used for some occupation.
 
     Args:
         db: Database session
@@ -276,6 +269,20 @@ def validate_filter_values(
         Cleaned filters dictionary with only valid values
     """
     validated = {}
+
+    # Map entity types to their occupation junction tables
+    occupation_junction_tables = {
+        "knowledge": "occupation_knowledge",
+        "skills": "occupation_skill",
+        "abilities": "occupation_ability",
+        "functions": "occupation_function",
+        "tasks": "occupation_task"
+    }
+
+    occupation_junction = occupation_junction_tables.get(entity_type)
+    if not occupation_junction:
+        logger.warning(f"Unknown entity type '{entity_type}'")
+        return validated
 
     for dim_name, values in filters.items():
         if dim_name not in DIMENSION_CONFIG:
@@ -291,22 +298,22 @@ def validate_filter_values(
             )
             continue
 
-        # Get valid values from database (only values actually in use)
+        # Get valid values from occupation junction table
         dim_table = dim_meta.table_name
-        junction_table = get_junction_table_name(entity_type, dim_name)
 
-        # Determine the foreign key column name in the junction table
+        # Determine the foreign key column name in the occupation junction table
         if dim_name == "environment":
             dimension_fk = "environment_id"
         else:
             dimension_fk = f"{dim_name}_id"
 
+        # Query occupation junction table to get values actually in use
         # Dimensions without scope
         if len(dim_meta.scope) == 0:
             query = f"""
                 SELECT DISTINCT d.name 
                 FROM {dim_table} d
-                INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
+                INNER JOIN {occupation_junction} oj ON d.id = oj.{dimension_fk}
             """
             valid_values = [row["name"] for row in fetch_all(db, query)]
         else:
@@ -315,7 +322,7 @@ def validate_filter_values(
             query = f"""
                 SELECT DISTINCT d.name 
                 FROM {dim_table} d
-                INNER JOIN {junction_table} j ON d.id = j.{dimension_fk}
+                INNER JOIN {occupation_junction} oj ON d.id = oj.{dimension_fk}
                 WHERE d.scope = :scope
             """
             valid_values = [
@@ -323,17 +330,16 @@ def validate_filter_values(
                 for row in fetch_all(db, query, {"scope": entity_scope})
             ]
 
-        # Filter out invalid values
-        valid_filter_values = [v for v in values if v in valid_values]
+        # Don't filter out invalid values - let the query return 0 results naturally
+        # This ensures that selecting a filter value that doesn't exist returns 0 results
+        # instead of returning ALL results (which happens when filters are empty)
+        validated[dim_name] = values
 
-        if valid_filter_values:
-            validated[dim_name] = valid_filter_values
-
-        # Log any invalid values
-        invalid = set(values) - set(valid_filter_values)
+        # Log any values that don't exist in the database (for debugging)
+        invalid = set(values) - set(valid_values)
         if invalid:
-            logger.warning(
-                f"Invalid values for '{dim_name}': {invalid}"
+            logger.info(
+                f"Filter values for '{dim_name}' not found in database (will return 0 results): {invalid}"
             )
 
     return validated

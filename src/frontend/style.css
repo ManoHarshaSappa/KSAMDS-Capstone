@@ -798,6 +798,36 @@ body{
   transform: translateX(2px);
 }
 
+/* ========== Load More Button ========== */
+.load-more-btn{
+  width: 100%;
+  padding: var(--s-16);
+  margin-top: var(--s-16);
+  border: 2px dashed var(--stroke);
+  border-radius: var(--radius-s);
+  background: #f9fafb;
+  color: var(--primary);
+  font-weight: 600;
+  font-size: var(--fs-14);
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+
+.load-more-btn:hover{
+  background: #f3f4f6;
+  border-color: var(--primary);
+  transform: translateY(-2px);
+}
+
+.load-more-btn:active{
+  transform: translateY(0);
+}
+
+.load-more-btn:disabled{
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ========== Responsive Design ========== */
 @media (max-width: 800px){
   .brandbar__inner{ 

@@ -210,8 +210,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   console.log('✅ KSAMDS Enhanced UI initialized with dimensional filters');
   
-  // Initialize autocomplete
+  // Initialize autocomplete and relationship modal
   initAutocomplete();
+  initRelationshipModal();
 });
 
 
@@ -227,6 +228,8 @@ const API_BASE_URL = "http://localhost:8000";
  */
 async function loadDimensions() {
   try {
+    console.log('🔄 Loading dimensions from API...');
+    
     const response = await fetch(`${API_BASE_URL}/api/filters/all`);
     
     if (!response.ok) {
@@ -235,16 +238,19 @@ async function loadDimensions() {
     
     const data = await response.json();
     
+    console.log('✅ Dimensions loaded from API:', data);
+    
     // Populate each entity type's dimensions
     for (const [entityType, filterData] of Object.entries(data)) {
+      console.log(`📝 Populating ${entityType} dimensions...`);
       populateDimensionDropdown(entityType, filterData);
     }
     
-    console.log('✅ Dimensions loaded from API:', data);
+    console.log('✅ All dimensions populated successfully');
     
   } catch (error) {
-    console.error('Failed to load dimensions:', error);
-    showNotification('Failed to load filter options', 'error');
+    console.error('❌ Failed to load dimensions:', error);
+    showNotification('Failed to load filter options. Please refresh the page.', 'error');
   }
 }
 
@@ -339,7 +345,7 @@ async function fetchResults(entityType, selectedFilters) {
     }
     
     // Display results in the appropriate content box
-    displayResults(`${entityType}-box`, results.results);
+    displayResults(`${entityType}-box`, results);
     
     return results;
     
@@ -393,7 +399,7 @@ async function performSearch(searchTerm, allFilters) {
     
     // Display results for each entity type
     results.forEach(({ entityType, data }) => {
-      displayResults(`${entityType}-box`, data.results);
+      displayResults(`${entityType}-box`, data);
     });
     
     console.log('Search results:', results);
@@ -405,6 +411,128 @@ async function performSearch(searchTerm, allFilters) {
     showNotification('Search failed', 'error');
     return null;
   }
+}
+
+/**
+ * Load more results for an entity type
+ * @param {string} entityType - Entity type to load more results for
+ */
+async function loadMoreResults(entityType) {
+  const box = document.getElementById(`${entityType}-box`);
+  const currentItems = box.querySelectorAll('.result-item').length;
+  
+  const searchTerm = document.querySelector('#search').value.trim();
+  
+  // Get active filters for this entity type
+  const filterDropdown = document.querySelector(`.dd[data-filter="${entityType}"]`);
+  const panel = filterDropdown.querySelector('.panel');
+  const filters = {};
+  
+  panel.querySelectorAll('.dimension-group').forEach(group => {
+    const dimension = group.dataset.dimension;
+    const selected = Array.from(group.querySelectorAll('input[type="checkbox"]:checked'))
+      .map(cb => cb.value);
+    
+    if (selected.length > 0) {
+      filters[dimension] = selected;
+    }
+  });
+  
+  try {
+    // Show loading state on button
+    const loadMoreBtn = box.querySelector('.load-more-btn');
+    if (loadMoreBtn) {
+      loadMoreBtn.textContent = 'Loading...';
+      loadMoreBtn.disabled = true;
+    }
+    
+    // Fetch next batch
+    const response = await fetch(`${API_BASE_URL}/api/search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        query: searchTerm || undefined,
+        entity_type: entityType,
+        filters: filters,
+        limit: 50,
+        offset: currentItems  // Start from where we left off
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    // Append new results
+    appendResults(`${entityType}-box`, data);
+    
+    showNotification(`Loaded ${data.results.length} more ${entityType}`);
+    
+  } catch (error) {
+    console.error(`Failed to load more ${entityType}:`, error);
+    showNotification(`Failed to load more ${entityType}`, 'error');
+    
+    // Re-enable button on error
+    const loadMoreBtn = box.querySelector('.load-more-btn');
+    if (loadMoreBtn) {
+      loadMoreBtn.textContent = 'Load More';
+      loadMoreBtn.disabled = false;
+    }
+  }
+}
+
+/**
+ * Append results to existing content (for load more)
+ * @param {string} boxId - ID of content box
+ * @param {Object} data - API response data with results and has_more
+ */
+function appendResults(boxId, data) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  
+  const entityType = boxId.replace('-box', '');
+  
+  // Remove "Load More" button if it exists
+  const existingBtn = box.querySelector('.load-more-btn');
+  if (existingBtn) existingBtn.remove();
+  
+  // Add new items
+  data.results.forEach(item => {
+    const itemEl = document.createElement('div');
+    itemEl.className = 'result-item';
+    itemEl.dataset.id = item.id;
+    itemEl.dataset.name = item.name;
+    itemEl.dataset.type = entityType;
+    
+    itemEl.innerHTML = `
+      <div class="result-item__header">
+        <h3 class="result-item__title">${item.name}</h3>
+      </div>
+    `;
+    
+    itemEl.addEventListener('click', () => {
+      openRelationshipModal(item.id, item.name, entityType);
+    });
+    
+    box.appendChild(itemEl);
+  });
+  
+  // Add "Load More" button if there are more results
+  if (data.has_more) {
+    const loadMoreBtn = document.createElement('button');
+    loadMoreBtn.className = 'load-more-btn';
+    loadMoreBtn.textContent = 'Load More';
+    loadMoreBtn.onclick = () => loadMoreResults(entityType);
+    box.appendChild(loadMoreBtn);
+  }
+  
+  // Update count badge
+  const totalItems = box.querySelectorAll('.result-item').length;
+  updateCountBadge(boxId, totalItems);
 }
 
 /**
@@ -428,14 +556,17 @@ function displayOccupationInfo(occupation) {
 /**
  * Display results in content boxes
  * @param {string} boxId - ID of content box (e.g., 'knowledge-box')
- * @param {Array} items - Array of result items
+ * @param {Object} data - API response data with results and has_more
  */
-function displayResults(boxId, items) {
+function displayResults(boxId, data) {
   const box = document.getElementById(boxId);
   if (!box) return;
   
   // Clear existing content
   box.innerHTML = '';
+  
+  const items = data.results;
+  const hasMore = data.has_more;
   
   if (!items || items.length === 0) {
     // Show empty state
@@ -468,14 +599,6 @@ function displayResults(boxId, items) {
     itemEl.innerHTML = `
       <div class="result-item__header">
         <h3 class="result-item__title">${item.name}</h3>
-        ${item.importance_score ? `<span class="result-item__score">${item.importance_score.toFixed(1)}</span>` : ''}
-      </div>
-      ${item.description ? `<p class="result-item__description">${item.description}</p>` : ''}
-      <div class="result-item__dimensions">
-        ${Object.entries(item.dimensions || {})
-          .filter(([_, value]) => value)
-          .map(([key, value]) => `<span class="dimension-tag">${key}: ${value}</span>`)
-          .join('')}
       </div>
     `;
     
@@ -487,8 +610,17 @@ function displayResults(boxId, items) {
     box.appendChild(itemEl);
   });
   
-  // Update count badge
-  updateCountBadge(boxId, items.length);
+  // Add "Load More" button if there are more results
+  if (hasMore) {
+    const loadMoreBtn = document.createElement('button');
+    loadMoreBtn.className = 'load-more-btn';
+    loadMoreBtn.textContent = 'Load More';
+    loadMoreBtn.onclick = () => loadMoreResults(entityType);
+    box.appendChild(loadMoreBtn);
+  }
+  
+  // Update count badge with total count from API
+  updateCountBadge(boxId, data.total);
 }
 
 /**
@@ -784,6 +916,7 @@ function initAutocomplete() {
   }
 }
 
+
 // ========================================
 // RELATIONSHIP MODAL FUNCTIONALITY
 // ========================================
@@ -918,11 +1051,6 @@ function initRelationshipModal() {
     }
   });
 }
-
-// Initialize on page load
-document.addEventListener('DOMContentLoaded', () => {
-  initRelationshipModal();
-});
 
 // Load dimensions on page load
 loadDimensions();

@@ -156,6 +156,13 @@ def build_dimension_filter_clause(
     """
     Build WHERE clause for dimensional filters
 
+    All dimensions are stored directly in the occupation junction tables:
+    - occupation_knowledge: type_id, level_id, basis_id
+    - occupation_skill: type_id, level_id, basis_id
+    - occupation_ability: type_id, level_id, basis_id
+    - occupation_function: environment_id, physicality_id, cognitive_id
+    - occupation_task: type_id, environment_id, mode_id
+
     Args:
         entity_type: Type of entity being filtered
         filters: Dictionary of dimension -> list of values
@@ -168,45 +175,52 @@ def build_dimension_filter_clause(
     if not filters:
         return "", {}
 
-    config = ENTITY_CONFIG[entity_type]
     where_clauses = []
     params = {}
     param_counter = 0
 
+    # Mapping of dimension names to their table names and foreign key columns in occupation junction
+    dimension_mappings = {
+        "knowledge": {
+            "type": {"table": "type_dim", "fk": "type_id"},
+            "level": {"table": "level_dim", "fk": "level_id"},
+            "basis": {"table": "basis_dim", "fk": "basis_id"}
+        },
+        "skills": {
+            "type": {"table": "type_dim", "fk": "type_id"},
+            "level": {"table": "level_dim", "fk": "level_id"},
+            "basis": {"table": "basis_dim", "fk": "basis_id"}
+        },
+        "abilities": {
+            "type": {"table": "type_dim", "fk": "type_id"},
+            "level": {"table": "level_dim", "fk": "level_id"},
+            "basis": {"table": "basis_dim", "fk": "basis_id"}
+        },
+        "functions": {
+            "environment": {"table": "environment_dim", "fk": "environment_id"},
+            "physicality": {"table": "physicality_dim", "fk": "physicality_id"},
+            "cognitive": {"table": "cognitive_dim", "fk": "cognitive_id"}
+        },
+        "tasks": {
+            "type": {"table": "type_dim", "fk": "type_id"},
+            "environment": {"table": "environment_dim", "fk": "environment_id"},
+            "mode": {"table": "mode_dim", "fk": "mode_id"}
+        }
+    }
+
+    # Get dimension mapping for this entity type
+    entity_dimensions = dimension_mappings.get(entity_type, {})
+
     for dim_name, values in filters.items():
-        # Special handling for 'level' dimension - it's in the occupation junction table
-        if dim_name == "level" and entity_type in ["knowledge", "skills", "abilities"]:
-            # Create unique parameter names for this dimension's values
-            value_params = []
-            for value in values:
-                param_name = f"level_value_{param_counter}"
-                params[param_name] = value
-                value_params.append(f":{param_name}")
-                param_counter += 1
-
-            # Check level in occupation junction table
-            subquery = f"""
-                EXISTS (
-                    SELECT 1
-                    FROM level_dim ld
-                    WHERE {occupation_junction_alias}.level_id = ld.id
-                    AND ld.name IN ({','.join(value_params)})
-                )
-            """
-            where_clauses.append(subquery)
-            continue
-
-        # Regular dimension filtering (type, basis, environment, etc.)
-        if dim_name not in config["dimensions"]:
+        # Check if dimension is applicable to this entity type
+        if dim_name not in entity_dimensions:
             logger.warning(
                 f"Dimension '{dim_name}' not applicable to '{entity_type}'")
             continue
 
-        dim_config = config["dimensions"][dim_name]
-        junction_table = dim_config["junction"]
-        dim_table = dim_config["table"]
-        dim_fk = dim_config["fk"]
-        entity_fk = config["entity_fk"]
+        dim_info = entity_dimensions[dim_name]
+        dim_table = dim_info["table"]
+        dim_fk = dim_info["fk"]
 
         # Create unique parameter names for this dimension's values
         value_params = []
@@ -216,13 +230,15 @@ def build_dimension_filter_clause(
             value_params.append(f":{param_name}")
             param_counter += 1
 
-        # Build subquery for this dimension
+        # Build filter clause using the dimension column in occupation junction table
+        # The dimension values are directly in the occupation_* junction table
+        # Note: Also check that the FK is NOT NULL to avoid matching records without dimensions
         subquery = f"""
-            EXISTS (
+            {occupation_junction_alias}.{dim_fk} IS NOT NULL
+            AND EXISTS (
                 SELECT 1
-                FROM {junction_table} j_{dim_name}
-                JOIN {dim_table} d_{dim_name} ON j_{dim_name}.{dim_fk} = d_{dim_name}.id
-                WHERE j_{dim_name}.{entity_fk} = {entity_alias}.id
+                FROM {dim_table} d_{dim_name}
+                WHERE {occupation_junction_alias}.{dim_fk} = d_{dim_name}.id
                 AND d_{dim_name}.name IN ({','.join(value_params)})
             )
         """
@@ -288,6 +304,12 @@ def search_entities(
         "oj"
     )
 
+    # Debug logging
+    if filters:
+        logger.info(f"Applied filters: {filters}")
+        logger.info(f"Filter clause: {filter_clause}")
+        logger.info(f"Filter params: {filter_params}")
+
     # Build occupation ID parameters
     occ_params = {}
     occ_id_placeholders = []
@@ -322,10 +344,13 @@ def search_entities(
 
     try:
         # Get total count
+        logger.debug(f"Count query: {count_query}")
+        logger.debug(f"Query params: {all_params}")
         count_result = fetch_one(db, count_query, all_params)
         total = count_result["total"] if count_result else 0
 
         # Get results
+        logger.debug(f"Data query: {data_query}")
         results = fetch_all(db, data_query, all_params)
 
         # Convert to EntityItem objects
