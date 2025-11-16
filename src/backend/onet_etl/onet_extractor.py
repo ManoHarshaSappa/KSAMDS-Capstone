@@ -13,7 +13,7 @@ import zipfile
 import pandas as pd
 from pathlib import Path
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 import shutil
 from datetime import datetime
 
@@ -386,9 +386,69 @@ class ONetExtractor:
 
         return self.dataframes
 
+    def _filter_excluded_occupations(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filter out occupations with O*NET-SOC Code starting with '55-' 
+        or Title ending with 'All Other' or 'All Other Specialists'.
+
+        Args:
+            df: DataFrame with 'O*NET-SOC Code' and optionally 'Title' columns
+
+        Returns:
+            pd.DataFrame: Filtered DataFrame
+        """
+        if 'O*NET-SOC Code' not in df.columns:
+            return df
+
+        initial_count = len(df)
+
+        # Filter out occupations starting with '55-'
+        mask = ~df['O*NET-SOC Code'].str.startswith('55-', na=False)
+
+        # Filter out occupations with Title ending in 'All Other' or 'All Other Specialists' if Title column exists
+        if 'Title' in df.columns:
+            mask = mask & ~df['Title'].str.endswith('All Other', na=False)
+            mask = mask & ~df['Title'].str.endswith(
+                'All Other Specialists', na=False)
+
+        df_filtered = df[mask].copy()
+
+        excluded_count = initial_count - len(df_filtered)
+        if excluded_count > 0:
+            logger.info(
+                f"Filtered out {excluded_count} occupation records (55-*, 'All Other', or 'All Other Specialists')")
+
+        return df_filtered
+
+    def _get_valid_occupation_codes(self) -> Set[str]:
+        """
+        Get the set of valid occupation codes after filtering.
+
+        Returns:
+            Set of valid O*NET-SOC codes
+        """
+        if 'occupation_data' not in self.dataframes:
+            return set()
+
+        occupation_df = self.dataframes['occupation_data']
+        if isinstance(occupation_df, dict):
+            # Handle multi-sheet case
+            for sheet_df in occupation_df.values():
+                if 'O*NET-SOC Code' in sheet_df.columns:
+                    occupation_df = sheet_df
+                    break
+
+        if isinstance(occupation_df, pd.DataFrame):
+            filtered_df = self._filter_excluded_occupations(occupation_df)
+            return set(filtered_df['O*NET-SOC Code'].unique())
+
+        return set()
+
     def save_dataframes_to_csv(self, output_dir: Optional[str] = None) -> bool:
         """
         Save all loaded DataFrames to CSV files for inspection.
+        Filters out occupations with O*NET-SOC Code starting with '55-' 
+        or Title ending with 'All Other', and removes related data.
 
         Args:
             output_dir: Directory to save CSV files (defaults to processed dir)
@@ -407,6 +467,12 @@ class ONetExtractor:
             output_dir = Path(output_dir)
 
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get valid occupation codes after filtering
+        valid_occupation_codes = self._get_valid_occupation_codes()
+        if valid_occupation_codes:
+            logger.info(
+                f"Retaining {len(valid_occupation_codes)} valid occupations after filtering")
 
         try:
             for key, df in self.dataframes.items():
@@ -429,6 +495,19 @@ class ONetExtractor:
                         main_df = df[main_sheet_name]
 
                     if main_df is not None:
+                        # Apply filtering for occupation-related data
+                        if key == 'occupation_data':
+                            main_df = self._filter_excluded_occupations(
+                                main_df)
+                        elif 'O*NET-SOC Code' in main_df.columns and valid_occupation_codes:
+                            initial_count = len(main_df)
+                            main_df = main_df[main_df['O*NET-SOC Code'].isin(
+                                valid_occupation_codes)].copy()
+                            excluded_count = initial_count - len(main_df)
+                            if excluded_count > 0:
+                                logger.info(
+                                    f"Filtered {excluded_count} records from {key} related to excluded occupations")
+
                         csv_path = output_dir / f"{key}.csv"
                         main_df.to_csv(csv_path, index=False)
                         logger.info(
@@ -436,8 +515,23 @@ class ONetExtractor:
 
                 else:
                     # Single DataFrame case
+                    df_to_save = df.copy()
+
+                    # Apply filtering for occupation-related data
+                    if key == 'occupation_data':
+                        df_to_save = self._filter_excluded_occupations(
+                            df_to_save)
+                    elif 'O*NET-SOC Code' in df_to_save.columns and valid_occupation_codes:
+                        initial_count = len(df_to_save)
+                        df_to_save = df_to_save[df_to_save['O*NET-SOC Code'].isin(
+                            valid_occupation_codes)].copy()
+                        excluded_count = initial_count - len(df_to_save)
+                        if excluded_count > 0:
+                            logger.info(
+                                f"Filtered {excluded_count} records from {key} related to excluded occupations")
+
                     csv_path = output_dir / f"{key}.csv"
-                    df.to_csv(csv_path, index=False)
+                    df_to_save.to_csv(csv_path, index=False)
                     logger.info(f"Saved {csv_path}")
 
             return True
