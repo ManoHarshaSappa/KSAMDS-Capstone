@@ -24,6 +24,7 @@ import shutil
 
 # Import pipeline components
 from onet_extractor import ONetExtractor
+from onet_datagen import ONetSyntheticAttributeGenerator
 from onet_mapper import ONetMapper
 from onet_loader import ONetLoader, DatabaseConfig
 from onet_validator import ONetValidator
@@ -89,6 +90,7 @@ class PipelineConfig:
     data_dir: str = "data"
     force_download: bool = False
     skip_extraction: bool = False
+    skip_datagen: bool = False
     skip_mapping: bool = False
     skip_relationship_inference: bool = False
     skip_loading: bool = False
@@ -128,6 +130,7 @@ class PipelineOrchestrator:
 
         # Initialize components
         self.extractor = None
+        self.datagen = None
         self.mapper = None
         self.loader = None
         self.validator = None
@@ -204,6 +207,54 @@ class PipelineOrchestrator:
             self.log_stage_complete(stage, duration, False)
             return result
 
+    def run_datagen(self) -> PipelineResult:
+        """Run the synthetic attribute generation stage."""
+        stage = "DATA_GENERATION"
+        self.log_stage_start(stage)
+        start = time.time()
+
+        try:
+            self.datagen = ONetSyntheticAttributeGenerator(
+                model_name="models/gemini-embedding-001",
+                batch_size=100,
+                confidence_threshold=0.5
+            )
+
+            success = self.datagen.process_all(save_to_csv=True)
+
+            if not success:
+                raise Exception("Synthetic attribute generation failed")
+
+            duration = time.time() - start
+            result = PipelineResult(
+                success=True,
+                stage=stage,
+                duration=duration,
+                message="Generated synthetic attributes for tasks and functions",
+                details={
+                    "total_processed": self.datagen.stats['total_processed'],
+                    "api_calls": self.datagen.stats['api_calls'],
+                    "cache_hits": self.datagen.stats['cache_hits'],
+                    "cache_misses": self.datagen.stats['cache_misses']
+                }
+            )
+
+            self.log_stage_complete(stage, duration, True)
+            return result
+
+        except Exception as e:
+            duration = time.time() - start
+            self.logger.error(f"Data generation failed: {e}", exc_info=True)
+            result = PipelineResult(
+                success=False,
+                stage=stage,
+                duration=duration,
+                message=f"Data generation failed: {str(e)}",
+                details={}
+            )
+            self.log_stage_complete(stage, duration, False)
+            return result
+
     def run_mapping(self) -> PipelineResult:
         """Run the mapping stage."""
         stage = "MAPPING"
@@ -265,9 +316,7 @@ class PipelineOrchestrator:
                     "Input validation failed - ensure onet_mapper.py completed successfully")
 
             # Build relationships
-            relationships = self.relationship_builder.build_relationships(
-                cleanup_after=self.config.cleanup_intermediate
-            )
+            relationships = self.relationship_builder.build_relationships()
 
             if not relationships:
                 raise Exception("Relationship inference failed")
@@ -432,10 +481,23 @@ class PipelineOrchestrator:
         # Clean up old embedding cache if relationship builder was used
         if self.relationship_builder:
             try:
+                # Get datagen cache files to preserve them
+                datagen_cache_files = set()
+                if self.datagen and hasattr(self.datagen, '_session_cache_files'):
+                    datagen_cache_files = self.datagen._session_cache_files
+                    self.logger.info(
+                        f"Preserving {len(datagen_cache_files)} datagen embedding files")
+
+                # Add datagen cache files to relationship builder's session files
+                if datagen_cache_files:
+                    self.relationship_builder._session_cache_files.update(
+                        datagen_cache_files)
+
                 self.relationship_builder.cleanup_intermediate_files(
                     keep_embeddings=False
                 )
-                self.logger.info("Cleaned up old embedding cache files")
+                self.logger.info(
+                    "Cleaned up old embedding cache files (preserved datagen embeddings)")
             except Exception as e:
                 self.logger.warning(f"Failed to clean up embeddings: {e}")
 
@@ -471,7 +533,19 @@ class PipelineOrchestrator:
         else:
             self.logger.info("Skipping extraction stage")
 
-        # Stage 2: Mapping
+        # Stage 2: Data Generation (Synthetic Attributes)
+        if not self.config.skip_datagen:
+            result = self.run_datagen()
+            self.results['data_generation'] = result
+            if not result.success:
+                overall_success = False
+                self.logger.error(
+                    "Pipeline halted due to data generation failure")
+                return False
+        else:
+            self.logger.info("Skipping data generation stage")
+
+        # Stage 3: Mapping
         if not self.config.skip_mapping:
             result = self.run_mapping()
             self.results['mapping'] = result
@@ -482,7 +556,7 @@ class PipelineOrchestrator:
         else:
             self.logger.info("Skipping mapping stage")
 
-        # Stage 3: Relationship Inference
+        # Stage 4: Relationship Inference
         if not self.config.skip_relationship_inference:
             result = self.run_relationship_inference()
             self.results['relationship_inference'] = result
@@ -494,7 +568,7 @@ class PipelineOrchestrator:
         else:
             self.logger.info("Skipping relationship inference stage")
 
-        # Stage 4: Loading
+        # Stage 5: Loading
         if not self.config.skip_loading:
             result = self.run_loading()
             self.results['loading'] = result
@@ -505,7 +579,7 @@ class PipelineOrchestrator:
         else:
             self.logger.info("Skipping loading stage")
 
-        # Stage 5: Validation
+        # Stage 6: Validation
         if not self.config.skip_validation:
             result = self.run_validation()
             self.results['validation'] = result
@@ -561,6 +635,17 @@ class PipelineOrchestrator:
             for key, info in summary.items():
                 if isinstance(info, dict) and 'rows' in info:
                     lines.append(f"  - {key}: {info['rows']:,} rows")
+
+        # Data Generation details
+        if 'data_generation' in self.results and self.results['data_generation'].success:
+            details = self.results['data_generation'].details
+            lines.append("\nData Generation:")
+            lines.append(
+                f"  - Total records processed: {details.get('total_processed', 0):,}")
+            lines.append(f"  - API calls: {details.get('api_calls', 0):,}")
+            lines.append(f"  - Cache hits: {details.get('cache_hits', 0):,}")
+            lines.append(
+                f"  - Cache misses: {details.get('cache_misses', 0):,}")
 
         # Mapping details
         if 'mapping' in self.results and self.results['mapping'].success:
@@ -670,6 +755,12 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        '--skip-datagen',
+        action='store_true',
+        help='Skip data generation stage (use existing synthetic attributes)'
+    )
+
+    parser.add_argument(
         '--skip-mapping',
         action='store_true',
         help='Skip mapping stage (use existing mapped data)'
@@ -774,6 +865,7 @@ def main():
         data_dir=args.data_dir,
         force_download=args.force_download,
         skip_extraction=args.skip_extraction,
+        skip_datagen=args.skip_datagen,
         skip_mapping=args.skip_mapping,
         skip_relationship_inference=args.skip_relationship_inference,
         skip_loading=args.skip_loading,

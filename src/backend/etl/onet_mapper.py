@@ -64,6 +64,7 @@ class KSAMDSEntity:
     id: str
     name: str
     source_ref: str
+    description: Optional[str] = None
     # Dimensions (optional)
     type_dims: List[str] = field(default_factory=list)
     # Now supports multiple levels
@@ -77,10 +78,12 @@ class KSAMDSEntity:
 
 @dataclass
 class OccupationRelationship:
-    """Represents an occupation relationship with level and importance tracking."""
+    """Represents an occupation relationship with dimension tracking."""
     occupation_id: str
     entity_id: str
     level: Optional[str] = None
+    type: Optional[str] = None
+    basis: Optional[str] = None
     importance_score: Optional[float] = None
 
 
@@ -311,7 +314,7 @@ class ONetMapper:
             self.onet_to_ksamds_ids[onet_soc] = entity_id
 
             occupation = KSAMDSEntity(
-                id=entity_id, name=title, source_ref=onet_soc)
+                id=entity_id, name=title, source_ref=onet_soc, description=description if pd.notna(description) else None)
             occupations[entity_id] = occupation
 
         logger.info(f"Mapped {len(occupations)} occupation entities")
@@ -548,7 +551,7 @@ class ONetMapper:
         return ability_entities
 
     def map_task_entities(self) -> Dict[str, KSAMDSEntity]:
-        """Map O*NET task statements to KSAMDS task entities."""
+        """Map O*NET task statements to KSAMDS task entities with synthetic attributes."""
         logger.info("=" * 70)
         logger.info("MAPPING TASK ENTITIES")
         logger.info("=" * 70)
@@ -560,6 +563,13 @@ class ONetMapper:
         tasks = {}
         df = self.onet_data['task_statements']
 
+        # Check if synthetic attributes exist
+        has_synthetic = all(col in df.columns for col in [
+                            'task_type', 'task_mode', 'task_environment'])
+        if not has_synthetic:
+            logger.warning(
+                "Synthetic attributes (task_type, task_mode, task_environment) not found in task_statements. Run onet_datagen.py first.")
+
         for _, row in df.iterrows():
             task_text = row.get('Task', '')
             task_id_onet = f"TASK_{row.get('Task ID', '')}"
@@ -568,15 +578,41 @@ class ONetMapper:
             self.onet_to_ksamds_ids[task_id_onet] = entity_id
 
             if entity_id not in tasks:
+                # Extract synthetic attributes if available
+                type_dims = []
+                mode_dims = []
+                environment_dims = []
+
+                if has_synthetic:
+                    task_type = row.get('task_type', '')
+                    task_mode = row.get('task_mode', '')
+                    task_environment = row.get('task_environment', '')
+
+                    if pd.notna(task_type) and task_type:
+                        type_dims = [task_type]
+                    if pd.notna(task_mode) and task_mode:
+                        mode_dims = [task_mode]
+                    if pd.notna(task_environment) and task_environment:
+                        environment_dims = [task_environment]
+
                 task = KSAMDSEntity(
-                    id=entity_id, name=task_text, source_ref=task_id_onet)
+                    id=entity_id,
+                    name=task_text,
+                    source_ref=task_id_onet,
+                    type_dims=type_dims,
+                    mode_dims=mode_dims,
+                    environment_dims=environment_dims
+                )
                 tasks[entity_id] = task
 
         logger.info(f"Mapped {len(tasks)} unique task entities")
+        if has_synthetic:
+            logger.info(
+                "  ✓ Synthetic attributes (type, mode, environment) populated")
         return tasks
 
     def map_function_entities(self) -> Dict[str, KSAMDSEntity]:
-        """Map O*NET work activities to KSAMDS function entities."""
+        """Map O*NET work activities to KSAMDS function entities with synthetic attributes."""
         logger.info("=" * 70)
         logger.info("MAPPING FUNCTION ENTITIES")
         logger.info("=" * 70)
@@ -591,6 +627,13 @@ class ONetMapper:
         logger.info(
             f"Filtered to {len(df_filtered)} function records (IM >= 3.0) from {len(df)} total")
 
+        # Check if synthetic attributes exist
+        has_synthetic = all(col in df_filtered.columns for col in [
+                            'function_physicality', 'function_cognitive_load', 'function_environment'])
+        if not has_synthetic:
+            logger.warning(
+                "Synthetic attributes (function_physicality, function_cognitive_load, function_environment) not found in work_activities. Run onet_datagen.py first.")
+
         name_to_canonical = self.map_similar_entities(df_filtered)
 
         functions = {}
@@ -602,13 +645,39 @@ class ONetMapper:
             entity_id = generate_deterministic_uuid('function', canonical_name)
 
             if entity_id not in functions:
+                # Extract synthetic attributes if available
+                physicality_dims = []
+                cognitive_dims = []
+                environment_dims = []
+
+                if has_synthetic:
+                    physicality = row.get('function_physicality', '')
+                    cognitive_load = row.get('function_cognitive_load', '')
+                    environment = row.get('function_environment', '')
+
+                    if pd.notna(physicality) and physicality:
+                        physicality_dims = [physicality]
+                    if pd.notna(cognitive_load) and cognitive_load:
+                        cognitive_dims = [cognitive_load]
+                    if pd.notna(environment) and environment:
+                        environment_dims = [environment]
+
                 function = KSAMDSEntity(
-                    id=entity_id, name=canonical_name, source_ref=element_id)
+                    id=entity_id,
+                    name=canonical_name,
+                    source_ref=element_id,
+                    physicality_dims=physicality_dims,
+                    cognitive_dims=cognitive_dims,
+                    environment_dims=environment_dims
+                )
                 functions[entity_id] = function
 
             self.onet_to_ksamds_ids[element_id] = entity_id
 
         logger.info(f"Mapped {len(functions)} unique function entities")
+        if has_synthetic:
+            logger.info(
+                "  ✓ Synthetic attributes (physicality, cognitive_load, environment) populated")
         return functions
 
     def map_education_levels(self) -> Dict[str, KSAMDSEntity]:
@@ -654,6 +723,7 @@ class ONetMapper:
                         'id': entity.id,
                         'name': entity.name,
                         'source_ref': entity.source_ref,
+                        'description': entity.description if entity.description else '',
                         'type_dims': '|'.join(entity.type_dims) if entity.type_dims else '',
                         'level_dims': '|'.join(entity.level_dims) if entity.level_dims else '',
                         'basis_dims': '|'.join(entity.basis_dims) if entity.basis_dims else '',
@@ -683,10 +753,15 @@ class ONetMapper:
                             'occupation_id': rel.occupation_id,
                             'entity_id': rel.entity_id,
                             'level': rel.level if rel.level else '',
+                            'type': rel.type if rel.type else '',
+                            'basis': rel.basis if rel.basis else '',
                             'importance_score': rel.importance_score if rel.importance_score else ''
                         }
                         rows.append(row)
                     df = pd.DataFrame(rows)
+                # Check if relationships are dicts (for task/function with dimensions)
+                elif relationships and isinstance(relationships[0], dict):
+                    df = pd.DataFrame(relationships)
                 else:
                     # Simple tuple relationships
                     df = pd.DataFrame(relationships, columns=[
@@ -737,10 +812,20 @@ class ONetMapper:
                     level = self.occupation_entity_levels.get(
                         (onet_soc, element_id))
 
+                    # Get type and basis from the knowledge entity
+                    knowledge_entity = self.ksamds_entities['knowledge'].get(
+                        knowledge_ksamds_id)
+                    knowledge_type = knowledge_entity.type_dims[
+                        0] if knowledge_entity and knowledge_entity.type_dims else None
+                    knowledge_basis = knowledge_entity.basis_dims[
+                        0] if knowledge_entity and knowledge_entity.basis_dims else None
+
                     rel = OccupationRelationship(
                         occupation_id=occupation_ksamds_id,
                         entity_id=knowledge_ksamds_id,
                         level=level,
+                        type=knowledge_type,
+                        basis=knowledge_basis,
                         importance_score=importance_score
                     )
 
@@ -769,10 +854,18 @@ class ONetMapper:
                     level = self.occupation_entity_levels.get(
                         (onet_soc, element_id))
 
+                    # Get type and basis from the skill entity
+                    skill_entity = self.ksamds_entities['skill'].get(
+                        skill_ksamds_id)
+                    skill_type = skill_entity.type_dims[0] if skill_entity and skill_entity.type_dims else None
+                    skill_basis = skill_entity.basis_dims[0] if skill_entity and skill_entity.basis_dims else None
+
                     rel = OccupationRelationship(
                         occupation_id=occupation_ksamds_id,
                         entity_id=skill_ksamds_id,
                         level=level,
+                        type=skill_type,
+                        basis=skill_basis,
                         importance_score=importance_score
                     )
 
@@ -800,10 +893,19 @@ class ONetMapper:
                     level = self.occupation_entity_levels.get(
                         (onet_soc, element_id))
 
+                    # Get type and basis from the ability entity
+                    ability_entity = self.ksamds_entities['ability'].get(
+                        ability_ksamds_id)
+                    ability_type = ability_entity.type_dims[0] if ability_entity and ability_entity.type_dims else None
+                    ability_basis = ability_entity.basis_dims[
+                        0] if ability_entity and ability_entity.basis_dims else None
+
                     rel = OccupationRelationship(
                         occupation_id=occupation_ksamds_id,
                         entity_id=ability_ksamds_id,
                         level=level,
+                        type=ability_type,
+                        basis=ability_basis,
                         importance_score=importance_score
                     )
 
@@ -812,7 +914,7 @@ class ONetMapper:
                                for r in relationships['occupation_ability']):
                         relationships['occupation_ability'].append(rel)
 
-        # TASK RELATIONSHIPS (no levels)
+        # TASK RELATIONSHIPS (with type, mode, environment from task entity)
         if 'task_statements' in self.onet_data:
             logger.info(
                 f"Processing {len(self.onet_data['task_statements'])} task relationships from task_statements")
@@ -822,12 +924,32 @@ class ONetMapper:
                 task_id = f"TASK_{row.get('Task ID', '')}"
                 occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
                 task_ksamds_id = self.onet_to_ksamds_ids.get(task_id)
+
                 if occupation_ksamds_id and task_ksamds_id:
-                    relationship = (occupation_ksamds_id, task_ksamds_id)
-                    if relationship not in relationships['occupation_task']:
+                    # Get task entity to retrieve its dimensions
+                    task_entity = self.ksamds_entities['task'].get(
+                        task_ksamds_id)
+
+                    # Extract first dimension value from each dimension type (or empty string)
+                    task_type = task_entity.type_dims[0] if task_entity and task_entity.type_dims else ''
+                    task_mode = task_entity.mode_dims[0] if task_entity and task_entity.mode_dims else ''
+                    task_env = task_entity.environment_dims[0] if task_entity and task_entity.environment_dims else ''
+
+                    # Create tuple with dimension values
+                    relationship = {
+                        'occupation_id': occupation_ksamds_id,
+                        'task_id': task_ksamds_id,
+                        'type': task_type,
+                        'mode': task_mode,
+                        'environment': task_env
+                    }
+
+                    # Avoid duplicates
+                    if not any(r['occupation_id'] == occupation_ksamds_id and r['task_id'] == task_ksamds_id
+                               for r in relationships['occupation_task']):
                         relationships['occupation_task'].append(relationship)
 
-        # FUNCTION RELATIONSHIPS (no levels)
+        # FUNCTION RELATIONSHIPS (with physicality, cognitive_load, environment from function entity)
         if 'work_activities' in self.onet_data:
             df_filtered = self.onet_data['work_activities'][(self.onet_data['work_activities']['Scale ID'] == 'IM') &
                                                             (self.onet_data['work_activities']['Data Value'] >= 3.0)]
@@ -839,9 +961,32 @@ class ONetMapper:
                 element_id = row.get('Element ID', '')
                 occupation_ksamds_id = self.onet_to_ksamds_ids.get(onet_soc)
                 function_ksamds_id = self.onet_to_ksamds_ids.get(element_id)
+
                 if occupation_ksamds_id and function_ksamds_id:
-                    relationship = (occupation_ksamds_id, function_ksamds_id)
-                    if relationship not in relationships['occupation_function']:
+                    # Get function entity to retrieve its dimensions
+                    function_entity = self.ksamds_entities['function'].get(
+                        function_ksamds_id)
+
+                    # Extract first dimension value from each dimension type (or empty string)
+                    physicality = function_entity.physicality_dims[
+                        0] if function_entity and function_entity.physicality_dims else ''
+                    cognitive = function_entity.cognitive_dims[
+                        0] if function_entity and function_entity.cognitive_dims else ''
+                    environment = function_entity.environment_dims[
+                        0] if function_entity and function_entity.environment_dims else ''
+
+                    # Create dict with dimension values
+                    relationship = {
+                        'occupation_id': occupation_ksamds_id,
+                        'function_id': function_ksamds_id,
+                        'physicality': physicality,
+                        'cognitive': cognitive,
+                        'environment': environment
+                    }
+
+                    # Avoid duplicates
+                    if not any(r['occupation_id'] == occupation_ksamds_id and r['function_id'] == function_ksamds_id
+                               for r in relationships['occupation_function']):
                         relationships['occupation_function'].append(
                             relationship)
 

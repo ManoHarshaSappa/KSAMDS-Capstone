@@ -199,11 +199,6 @@ class ONetLoader:
                             # Store with scope prefix for proper lookup
                             key_with_scope = f"{row['scope']}:{row['name']}"
                             self.dimension_lookups[dim_table][key_with_scope] = row['id']
-                            # Also store without scope for backward compatibility
-                            # (but scoped version takes precedence)
-                            if row['name'] not in self.dimension_lookups[dim_table]:
-                                self.dimension_lookups[dim_table][row['name']
-                                                                  ] = row['id']
                     # mode_dim, physicality_dim, cognitive_dim (no scope)
                     else:
                         cursor.execute(f"SELECT id, name FROM {dim_table}")
@@ -223,197 +218,249 @@ class ONetLoader:
             return False
 
     def initialize_dimensions(self) -> bool:
-        """Initialize dimension tables with default values."""
+        """
+        Initialize dimension tables by extracting unique values from mapped data files.
+        This ensures dimensions are data-driven and adapt to new data sources.
+        """
         try:
+            logger.info("=" * 70)
+            logger.info("INITIALIZING DIMENSION TABLES FROM DATA")
+            logger.info("-" * 70)
+
+            # Track all unique dimension values from the data
+            dimension_sets = {
+                'type_dim': {},      # scope -> set of names
+                'level_dim': {},     # scope -> set of names
+                'basis_dim': {},     # scope -> set of names
+                'environment_dim': {},  # scope -> set of names
+                'mode_dim': set(),
+                'physicality_dim': set(),
+                'cognitive_dim': set()
+            }
+
+            # Scope mappings for entities
+            scope_map = {
+                'knowledge_mapped': 'K',
+                'skill_mapped': 'S',
+                'ability_mapped': 'A',
+                'task_mapped': 'T',
+                'function_mapped': 'F'
+            }
+
+            # Extract dimensions from each mapped file
+            for file_key, scope in scope_map.items():
+                if file_key not in self.mapped_data:
+                    logger.warning(f"Skipping {file_key} - not loaded")
+                    continue
+
+                df = self.mapped_data[file_key]
+                logger.info(
+                    f"📊 Extracting dimensions from {file_key} ({len(df)} rows)...")
+
+                # Extract type dimensions
+                if 'type_dims' in df.columns:
+                    for types in df['type_dims'].dropna():
+                        for type_name in str(types).split('|'):
+                            type_name = type_name.strip()
+                            if type_name:
+                                if scope not in dimension_sets['type_dim']:
+                                    dimension_sets['type_dim'][scope] = set()
+                                dimension_sets['type_dim'][scope].add(
+                                    type_name)
+
+                # Extract level dimensions
+                if 'level_dims' in df.columns:
+                    for levels in df['level_dims'].dropna():
+                        for level_name in str(levels).split('|'):
+                            level_name = level_name.strip()
+                            if level_name:
+                                if scope not in dimension_sets['level_dim']:
+                                    dimension_sets['level_dim'][scope] = set()
+                                dimension_sets['level_dim'][scope].add(
+                                    level_name)
+
+                # Extract basis dimensions
+                if 'basis_dims' in df.columns:
+                    for bases in df['basis_dims'].dropna():
+                        for basis_name in str(bases).split('|'):
+                            basis_name = basis_name.strip()
+                            if basis_name:
+                                if scope not in dimension_sets['basis_dim']:
+                                    dimension_sets['basis_dim'][scope] = set()
+                                dimension_sets['basis_dim'][scope].add(
+                                    basis_name)
+
+                # Extract environment dimensions
+                if 'environment_dims' in df.columns:
+                    for envs in df['environment_dims'].dropna():
+                        for env_name in str(envs).split('|'):
+                            env_name = env_name.strip()
+                            if env_name:
+                                if scope not in dimension_sets['environment_dim']:
+                                    dimension_sets['environment_dim'][scope] = set(
+                                    )
+                                dimension_sets['environment_dim'][scope].add(
+                                    env_name)
+
+                # Extract mode dimensions (no scope)
+                if 'mode_dims' in df.columns:
+                    for modes in df['mode_dims'].dropna():
+                        for mode_name in str(modes).split('|'):
+                            mode_name = mode_name.strip()
+                            if mode_name:
+                                dimension_sets['mode_dim'].add(mode_name)
+
+                # Extract physicality dimensions (no scope)
+                if 'physicality_dims' in df.columns:
+                    for phys in df['physicality_dims'].dropna():
+                        for phys_name in str(phys).split('|'):
+                            phys_name = phys_name.strip()
+                            if phys_name:
+                                dimension_sets['physicality_dim'].add(
+                                    phys_name)
+
+                # Extract cognitive dimensions (no scope)
+                if 'cognitive_dims' in df.columns:
+                    for cog in df['cognitive_dims'].dropna():
+                        for cog_name in str(cog).split('|'):
+                            cog_name = cog_name.strip()
+                            if cog_name:
+                                dimension_sets['cognitive_dim'].add(cog_name)
+
+            # Insert into database
             with self.get_db_connection() as conn:
                 cursor = conn.cursor()
-
-                # Set schema
                 cursor.execute(
                     f"SET search_path TO {self.db_config.schema}, public")
 
-                logger.info("=" * 70)
-                logger.info("INITIALIZING DIMENSION TABLES")
-                logger.info("-" * 70)
+                # Insert type dimensions
+                type_dims = []
+                for scope, names in dimension_sets['type_dim'].items():
+                    for name in sorted(names):
+                        type_dims.append((scope, name, None))
 
-                # Type dimensions - clean names without prefixes
-                type_dims = [
-                    ('K', 'Technical', 'Technical knowledge and expertise'),
-                    ('K', 'Analytical', 'Analytical and quantitative knowledge'),
-                    ('K', 'Business', 'Business and commercial knowledge'),
-                    ('K', 'Management', 'Management and leadership knowledge'),
-                    ('K', 'Social', 'Social and interpersonal knowledge'),
-                    ('K', 'Scientific', 'Scientific and research knowledge'),
-                    ('K', 'Safety', 'Safety and regulatory knowledge'),
-                    ('K', 'General', 'General knowledge'),
-                    ('S', 'Technical', 'Technical skills'),
-                    ('S', 'Analytical', 'Analytical and problem-solving skills'),
-                    ('S', 'Social', 'Social and interpersonal skills'),
-                    ('S', 'Management', 'Management and coordination skills'),
-                    ('S', 'Physical', 'Physical and manual skills'),
-                    ('S', 'Cognitive', 'Cognitive and mental skills'),
-                    ('S', 'General', 'General skills'),
-                    ('A', 'Cognitive', 'Cognitive abilities'),
-                    ('A', 'Physical', 'Physical abilities'),
-                    ('A', 'Sensory', 'Sensory and perceptual abilities'),
-                    ('A', 'General', 'General abilities'),
-                    ('T', 'Manual', 'Manual or hands-on task'),
-                    ('T', 'Cognitive', 'Cognitive or analytical task'),
-                    ('T', 'Social', 'Social or interpersonal task'),
-                    ('T', 'Administrative', 'Administrative or organizational task'),
-                ]
+                if type_dims:
+                    logger.info(
+                        f"⏳ Inserting {len(type_dims)} type dimensions...")
+                    execute_batch(
+                        cursor,
+                        "INSERT INTO type_dim (scope, name, description) VALUES (%s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
+                        type_dims,
+                        page_size=100
+                    )
+                    logger.info(
+                        f"✓ Inserted/verified {len(type_dims)} type dimensions")
 
-                logger.info("⏳ Inserting type dimensions...")
-                execute_batch(
-                    cursor,
-                    "INSERT INTO type_dim (scope, name, description) VALUES (%s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
-                    type_dims,
-                    page_size=100
-                )
-                logger.info(
-                    f"✓ Inserted/verified {len(type_dims)} type dimensions")
+                # Insert level dimensions with ordinal assignment
+                level_dims = []
+                # Define ordinal mappings for common level names
+                level_ordinals = {
+                    'K': {'Basic': 1, 'Intermediate': 2, 'Advanced': 3, 'Expert': 4},
+                    'S': {'Novice': 1, 'Proficient': 2, 'Expert': 3, 'Master': 4},
+                    'A': {'Low': 1, 'Moderate': 2, 'High': 3}
+                }
 
-                # Level dimensions - NOW INCLUDING ALL SCOPES
-                level_dims = [
-                    # Knowledge levels (K)
-                    ('K', 'Basic', 1, 'O*NET Level 1-2: Fundamental concepts'),
-                    ('K', 'Intermediate', 2, 'O*NET Level 3-4: Working knowledge'),
-                    ('K', 'Advanced', 3, 'O*NET Level 5-6: Deep expertise'),
-                    ('K', 'Expert', 4, 'O*NET Level 7: Mastery'),
-                    # Skills levels (S)
-                    ('S', 'Novice', 1, 'O*NET Level 1-2: Basic capability'),
-                    ('S', 'Proficient', 2, 'O*NET Level 3-5: Competent execution'),
-                    ('S', 'Expert', 3, 'O*NET Level 6: High proficiency'),
-                    ('S', 'Master', 4, 'O*NET Level 7: Exceptional skill'),
-                    # Abilities levels (A)
-                    ('A', 'Low', 1, 'O*NET Level 1-3: Below average requirement'),
-                    ('A', 'Moderate', 2, 'O*NET Level 4-5: Average requirement'),
-                    ('A', 'High', 3, 'O*NET Level 6-7: Above average requirement'),
-                ]
+                for scope, names in dimension_sets['level_dim'].items():
+                    for name in sorted(names):
+                        ordinal = level_ordinals.get(scope, {}).get(name, None)
+                        level_dims.append((scope, name, ordinal, None))
 
-                logger.info("⏳ Inserting level dimensions...")
-                execute_batch(
-                    cursor,
-                    "INSERT INTO level_dim (scope, name, ordinal, description) VALUES (%s, %s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
-                    level_dims,
-                    page_size=100
-                )
-                logger.info(
-                    f"✓ Inserted/verified {len(level_dims)} level dimensions")
+                if level_dims:
+                    logger.info(
+                        f"⏳ Inserting {len(level_dims)} level dimensions...")
+                    execute_batch(
+                        cursor,
+                        "INSERT INTO level_dim (scope, name, ordinal, description) VALUES (%s, %s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
+                        level_dims,
+                        page_size=100
+                    )
+                    logger.info(
+                        f"✓ Inserted/verified {len(level_dims)} level dimensions")
 
-                # Basis dimensions
-                basis_dims = [
-                    ('K', 'Academic', 'Acquired through formal education'),
-                    ('K', 'On-the-Job Training',
-                     'Acquired through workplace experience'),
-                    ('K', 'Vocational Training',
-                     'Acquired through vocational or technical training'),
-                    ('K', 'Professional Development',
-                     'Acquired through continuing education'),
-                    ('S', 'Academic', 'Developed through formal education'),
-                    ('S', 'On-the-Job Training',
-                     'Developed through workplace practice'),
-                    ('S', 'Vocational Training',
-                     'Developed through vocational training'),
-                    ('S', 'Professional Development',
-                     'Developed through professional practice'),
-                    ('A', 'Academic', 'Ability developed through formal education'),
-                    ('A', 'On-the-Job Training',
-                     'Ability developed through workplace practice'),
-                    ('A', 'Vocational Training',
-                     'Ability developed through vocational training'),
-                    ('A', 'Professional Development',
-                     'Ability developed through continuing practice'),
-                ]
+                # Insert basis dimensions
+                basis_dims = []
+                for scope, names in dimension_sets['basis_dim'].items():
+                    for name in sorted(names):
+                        basis_dims.append((scope, name, None))
 
-                logger.info("⏳ Inserting basis dimensions...")
-                execute_batch(
-                    cursor,
-                    "INSERT INTO basis_dim (scope, name, description) VALUES (%s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
-                    basis_dims,
-                    page_size=100
-                )
-                logger.info(
-                    f"✓ Inserted/verified {len(basis_dims)} basis dimensions")
+                if basis_dims:
+                    logger.info(
+                        f"⏳ Inserting {len(basis_dims)} basis dimensions...")
+                    execute_batch(
+                        cursor,
+                        "INSERT INTO basis_dim (scope, name, description) VALUES (%s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
+                        basis_dims,
+                        page_size=100
+                    )
+                    logger.info(
+                        f"✓ Inserted/verified {len(basis_dims)} basis dimensions")
 
-                # Environment dimensions
-                env_dims = [
-                    ('F', 'Office', 'Office or indoor workspace'),
-                    ('F', 'Outdoor', 'Outdoor environment'),
-                    ('F', 'Laboratory', 'Laboratory setting'),
-                    ('F', 'Industrial', 'Industrial or manufacturing setting'),
-                    ('F', 'Remote', 'Remote or distributed work'),
-                    ('T', 'Office', 'Performed in office setting'),
-                    ('T', 'Field', 'Performed in field or outdoor setting'),
-                    ('T', 'Laboratory', 'Performed in laboratory'),
-                    ('T', 'Customer Site', 'Performed at customer location'),
-                ]
+                # Insert environment dimensions
+                env_dims = []
+                for scope, names in dimension_sets['environment_dim'].items():
+                    for name in sorted(names):
+                        env_dims.append((scope, name, None))
 
-                logger.info("⏳ Inserting environment dimensions...")
-                execute_batch(
-                    cursor,
-                    "INSERT INTO environment_dim (scope, name, description) VALUES (%s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
-                    env_dims,
-                    page_size=100
-                )
-                logger.info(
-                    f"✓ Inserted/verified {len(env_dims)} environment dimensions")
+                if env_dims:
+                    logger.info(
+                        f"⏳ Inserting {len(env_dims)} environment dimensions...")
+                    execute_batch(
+                        cursor,
+                        "INSERT INTO environment_dim (scope, name, description) VALUES (%s, %s, %s) ON CONFLICT (scope, name) DO NOTHING",
+                        env_dims,
+                        page_size=100
+                    )
+                    logger.info(
+                        f"✓ Inserted/verified {len(env_dims)} environment dimensions")
 
-                # Mode dimensions (Task only - no scope column needed)
-                mode_dims = [
-                    ('Tool-Based', 'Requires use of specific tools'),
-                    ('Process-Based', 'Follows defined processes'),
-                    ('Creative', 'Requires creative problem-solving'),
-                    ('Analytical', 'Requires data analysis'),
-                ]
+                # Insert mode dimensions
+                mode_dims = [(name, None)
+                             for name in sorted(dimension_sets['mode_dim'])]
+                if mode_dims:
+                    logger.info(
+                        f"⏳ Inserting {len(mode_dims)} mode dimensions...")
+                    execute_batch(
+                        cursor,
+                        "INSERT INTO mode_dim (name, description) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                        mode_dims,
+                        page_size=100
+                    )
+                    logger.info(
+                        f"✓ Inserted/verified {len(mode_dims)} mode dimensions")
 
-                logger.info("⏳ Inserting mode dimensions...")
-                execute_batch(
-                    cursor,
-                    "INSERT INTO mode_dim (name, description) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
-                    mode_dims,
-                    page_size=100
-                )
-                logger.info(
-                    f"✓ Inserted/verified {len(mode_dims)} mode dimensions")
+                # Insert physicality dimensions
+                phys_dims = [(name, None) for name in sorted(
+                    dimension_sets['physicality_dim'])]
+                if phys_dims:
+                    logger.info(
+                        f"⏳ Inserting {len(phys_dims)} physicality dimensions...")
+                    execute_batch(
+                        cursor,
+                        "INSERT INTO physicality_dim (name, description) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                        phys_dims,
+                        page_size=100
+                    )
+                    logger.info(
+                        f"✓ Inserted/verified {len(phys_dims)} physicality dimensions")
 
-                # Physicality dimensions
-                phys_dims = [
-                    ('Light', 'Minimal physical demands'),
-                    ('Moderate', 'Moderate physical activity'),
-                    ('Heavy', 'Significant physical exertion'),
-                ]
-
-                logger.info("⏳ Inserting physicality dimensions...")
-                execute_batch(
-                    cursor,
-                    "INSERT INTO physicality_dim (name, description) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
-                    phys_dims,
-                    page_size=100
-                )
-                logger.info(
-                    f"✓ Inserted/verified {len(phys_dims)} physicality dimensions")
-
-                # Cognitive dimensions
-                cog_dims = [
-                    ('Light', 'Basic cognitive requirements'),
-                    ('Moderate', 'Moderate cognitive demands'),
-                    ('Heavy', 'High cognitive complexity'),
-                ]
-
-                logger.info("⏳ Inserting cognitive dimensions...")
-                execute_batch(
-                    cursor,
-                    "INSERT INTO cognitive_dim (name, description) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
-                    cog_dims,
-                    page_size=100
-                )
-                logger.info(
-                    f"✓ Inserted/verified {len(cog_dims)} cognitive dimensions")
+                # Insert cognitive dimensions
+                cog_dims = [(name, None)
+                            for name in sorted(dimension_sets['cognitive_dim'])]
+                if cog_dims:
+                    logger.info(
+                        f"⏳ Inserting {len(cog_dims)} cognitive dimensions...")
+                    execute_batch(
+                        cursor,
+                        "INSERT INTO cognitive_dim (name, description) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                        cog_dims,
+                        page_size=100
+                    )
+                    logger.info(
+                        f"✓ Inserted/verified {len(cog_dims)} cognitive dimensions")
 
                 conn.commit()
                 logger.info("=" * 70)
-                logger.info("✓ DIMENSION TABLES INITIALIZED")
+                logger.info("✓ DIMENSION TABLES INITIALIZED FROM DATA")
                 logger.info("=" * 70)
                 return True
 
@@ -899,7 +946,8 @@ class ONetLoader:
                     f"SET search_path TO {self.db_config.schema}, public")
 
                 occupation_data = [
-                    (row['id'], row['name'], row['source_ref'] if pd.notna(
+                    (row['id'], row['name'], row.get('description') if pd.notna(
+                        row.get('description')) else None, row['source_ref'] if pd.notna(
                         row['source_ref']) else None)
                     for _, row in df.iterrows()
                 ]
@@ -908,7 +956,7 @@ class ONetLoader:
                     f"⏳ Inserting {len(occupation_data)} occupation entities...")
                 execute_batch(
                     cursor,
-                    "INSERT INTO occupation (id, title, source_ref) VALUES (%s, %s, %s) ON CONFLICT (title) DO NOTHING",
+                    "INSERT INTO occupation (id, title, description, source_ref) VALUES (%s, %s, %s, %s) ON CONFLICT (title) DO NOTHING",
                     occupation_data,
                     page_size=1000
                 )
@@ -927,10 +975,10 @@ class ONetLoader:
             return False
 
     def insert_task_entities(self) -> bool:
-        """Insert task entities."""
+        """Insert task entities and their dimension associations."""
         try:
             logger.info("=" * 70)
-            logger.info("INSERTING TASK ENTITIES")
+            logger.info("INSERTING TASK ENTITIES WITH DIMENSIONS")
             logger.info("-" * 70)
 
             if 'task_mapped' not in self.mapped_data:
@@ -957,10 +1005,93 @@ class ONetLoader:
                     task_data,
                     page_size=1000
                 )
+                logger.info(f"✓ Inserted {len(task_data)} task entities")
+
+                # Insert task dimension associations
+                dim_count = 0
+
+                # Task type associations
+                if 'type_dims' in df.columns:
+                    type_rels = []
+                    for _, row in df.iterrows():
+                        type_dims = row.get('type_dims', '')
+                        if pd.notna(type_dims) and type_dims:
+                            for type_name in str(type_dims).split('|'):
+                                type_name = type_name.strip()
+                                if type_name:
+                                    type_id = self._get_type_id(type_name, 'T')
+                                    if type_id:
+                                        type_rels.append((row['id'], type_id))
+
+                    if type_rels:
+                        execute_batch(
+                            cursor,
+                            "INSERT INTO task_type (task_id, type_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            type_rels,
+                            page_size=1000
+                        )
+                        logger.info(
+                            f"  ✓ Inserted {len(type_rels)} task type associations")
+                        dim_count += len(type_rels)
+
+                # Task mode associations
+                if 'mode_dims' in df.columns:
+                    mode_rels = []
+                    for _, row in df.iterrows():
+                        mode_dims = row.get('mode_dims', '')
+                        if pd.notna(mode_dims) and mode_dims:
+                            for mode_name in str(mode_dims).split('|'):
+                                mode_name = mode_name.strip()
+                                if mode_name:
+                                    mode_id = self.dimension_lookups['mode_dim'].get(
+                                        mode_name)
+                                    if mode_id:
+                                        mode_rels.append((row['id'], mode_id))
+
+                    if mode_rels:
+                        execute_batch(
+                            cursor,
+                            "INSERT INTO task_mode (task_id, mode_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            mode_rels,
+                            page_size=1000
+                        )
+                        logger.info(
+                            f"  ✓ Inserted {len(mode_rels)} task mode associations")
+                        dim_count += len(mode_rels)
+
+                # Task environment associations
+                if 'environment_dims' in df.columns:
+                    env_rels = []
+                    for _, row in df.iterrows():
+                        env_dims = row.get('environment_dims', '')
+                        if pd.notna(env_dims) and env_dims:
+                            for env_name in str(env_dims).split('|'):
+                                env_name = env_name.strip()
+                                if env_name:
+                                    env_id = self.dimension_lookups['environment_dim'].get(
+                                        f"T:{env_name}",
+                                        self.dimension_lookups['environment_dim'].get(
+                                            env_name)
+                                    )
+                                    if env_id:
+                                        env_rels.append((row['id'], env_id))
+
+                    if env_rels:
+                        execute_batch(
+                            cursor,
+                            "INSERT INTO task_env (task_id, environment_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            env_rels,
+                            page_size=1000
+                        )
+                        logger.info(
+                            f"  ✓ Inserted {len(env_rels)} task environment associations")
+                        dim_count += len(env_rels)
 
                 conn.commit()
                 self.insertion_stats['task'] = len(task_data)
-                logger.info(f"✓ Inserted {len(task_data)} task entities")
+                self.insertion_stats['entity_levels'] += dim_count
+                logger.info(
+                    f"✓ Total task dimension associations: {dim_count}")
                 logger.info("=" * 70)
                 return True
 
@@ -970,10 +1101,10 @@ class ONetLoader:
             return False
 
     def insert_function_entities(self) -> bool:
-        """Insert function entities."""
+        """Insert function entities and their dimension associations."""
         try:
             logger.info("=" * 70)
-            logger.info("INSERTING FUNCTION ENTITIES")
+            logger.info("INSERTING FUNCTION ENTITIES WITH DIMENSIONS")
             logger.info("-" * 70)
 
             if 'function_mapped' not in self.mapped_data:
@@ -1001,11 +1132,95 @@ class ONetLoader:
                     function_data,
                     page_size=1000
                 )
+                logger.info(
+                    f"✓ Inserted {len(function_data)} function entities")
+
+                # Insert function dimension associations
+                dim_count = 0
+
+                # Function physicality associations
+                if 'physicality_dims' in df.columns:
+                    phys_rels = []
+                    for _, row in df.iterrows():
+                        phys_dims = row.get('physicality_dims', '')
+                        if pd.notna(phys_dims) and phys_dims:
+                            for phys_name in str(phys_dims).split('|'):
+                                phys_name = phys_name.strip()
+                                if phys_name:
+                                    phys_id = self.dimension_lookups['physicality_dim'].get(
+                                        phys_name)
+                                    if phys_id:
+                                        phys_rels.append((row['id'], phys_id))
+
+                    if phys_rels:
+                        execute_batch(
+                            cursor,
+                            "INSERT INTO function_physicality (function_id, physicality_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            phys_rels,
+                            page_size=1000
+                        )
+                        logger.info(
+                            f"  ✓ Inserted {len(phys_rels)} function physicality associations")
+                        dim_count += len(phys_rels)
+
+                # Function cognitive associations
+                if 'cognitive_dims' in df.columns:
+                    cog_rels = []
+                    for _, row in df.iterrows():
+                        cog_dims = row.get('cognitive_dims', '')
+                        if pd.notna(cog_dims) and cog_dims:
+                            for cog_name in str(cog_dims).split('|'):
+                                cog_name = cog_name.strip()
+                                if cog_name:
+                                    cog_id = self.dimension_lookups['cognitive_dim'].get(
+                                        cog_name)
+                                    if cog_id:
+                                        cog_rels.append((row['id'], cog_id))
+
+                    if cog_rels:
+                        execute_batch(
+                            cursor,
+                            "INSERT INTO function_cognitive (function_id, cognitive_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            cog_rels,
+                            page_size=1000
+                        )
+                        logger.info(
+                            f"  ✓ Inserted {len(cog_rels)} function cognitive associations")
+                        dim_count += len(cog_rels)
+
+                # Function environment associations
+                if 'environment_dims' in df.columns:
+                    env_rels = []
+                    for _, row in df.iterrows():
+                        env_dims = row.get('environment_dims', '')
+                        if pd.notna(env_dims) and env_dims:
+                            for env_name in str(env_dims).split('|'):
+                                env_name = env_name.strip()
+                                if env_name:
+                                    env_id = self.dimension_lookups['environment_dim'].get(
+                                        f"F:{env_name}",
+                                        self.dimension_lookups['environment_dim'].get(
+                                            env_name)
+                                    )
+                                    if env_id:
+                                        env_rels.append((row['id'], env_id))
+
+                    if env_rels:
+                        execute_batch(
+                            cursor,
+                            "INSERT INTO function_env (function_id, environment_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            env_rels,
+                            page_size=1000
+                        )
+                        logger.info(
+                            f"  ✓ Inserted {len(env_rels)} function environment associations")
+                        dim_count += len(env_rels)
 
                 conn.commit()
                 self.insertion_stats['function'] = len(function_data)
+                self.insertion_stats['entity_levels'] += dim_count
                 logger.info(
-                    f"✓ Inserted {len(function_data)} function entities")
+                    f"✓ Total function dimension associations: {dim_count}")
                 logger.info("=" * 70)
                 return True
 
@@ -1249,7 +1464,7 @@ class ONetLoader:
 
                     relationships = []
                     for _, row in df.iterrows():
-                        # Get type_id, environment_id, and mode_id (may not exist in current data)
+                        # Get type_id, environment_id, and mode_id
                         type_id = None
                         if pd.notna(row.get('type')) and row['type']:
                             type_id = self._get_type_id(row['type'], 'T')
@@ -1274,8 +1489,8 @@ class ONetLoader:
                             importance = None
 
                         relationships.append((
-                            row['source_id'],
-                            row['target_id'],
+                            row['occupation_id'],
+                            row['task_id'],
                             type_id,
                             environment_id,
                             mode_id,
@@ -1303,7 +1518,7 @@ class ONetLoader:
 
                     relationships = []
                     for _, row in df.iterrows():
-                        # Get environment_id, physicality_id, and cognitive_id (may not exist in current data)
+                        # Get environment_id, physicality_id, and cognitive_id
                         environment_id = None
                         if pd.notna(row.get('environment')) and row['environment']:
                             environment_id = self.dimension_lookups['environment_dim'].get(
@@ -1329,8 +1544,8 @@ class ONetLoader:
                             importance = None
 
                         relationships.append((
-                            row['source_id'],
-                            row['target_id'],
+                            row['occupation_id'],
+                            row['function_id'],
                             environment_id,
                             physicality_id,
                             cognitive_id,

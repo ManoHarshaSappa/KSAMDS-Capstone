@@ -737,44 +737,6 @@ class ONetRelationshipBuilder:
         logger.info("Metadata included in pipeline report")
 
     # ========================================================================
-    # CLEANUP
-    # ========================================================================
-
-    def cleanup_intermediate_files(self, keep_embeddings: bool = False):
-        """
-        Clean up intermediate files after pipeline completion.
-
-        Args:
-            keep_embeddings: If True, keeps embedding cache files
-        """
-        logger.info("Cleaning up intermediate files...")
-
-        if not keep_embeddings and self.cache_dir.exists():
-            # Remove old cache files not in current session
-            all_cache_files = set(self.cache_dir.glob("*.pkl"))
-            files_to_remove = all_cache_files - self._session_cache_files
-
-            removed_count = 0
-            removed_size = 0
-
-            for cache_file in files_to_remove:
-                try:
-                    file_size = cache_file.stat().st_size
-                    cache_file.unlink()
-                    removed_count += 1
-                    removed_size += file_size
-                except Exception as e:
-                    logger.warning(f"Failed to remove {cache_file}: {e}")
-
-            if removed_count > 0:
-                logger.info(
-                    f"Removed {removed_count} old cache files ({removed_size / 1024 / 1024:.2f} MB)")
-            else:
-                logger.info("No old cache files to remove")
-
-        logger.info("Cleanup completed")
-
-    # ========================================================================
     # MAIN PIPELINE
     # ========================================================================
 
@@ -806,12 +768,9 @@ class ONetRelationshipBuilder:
 
         return all_valid
 
-    def build_relationships(self, cleanup_after: bool = False) -> Dict[str, pd.DataFrame]:
+    def build_relationships(self) -> Dict[str, pd.DataFrame]:
         """
         Execute the complete relationship building pipeline.
-
-        Args:
-            cleanup_after: Whether to clean up intermediate files
 
         Returns:
             Dictionary of relationship DataFrames
@@ -861,10 +820,6 @@ class ONetRelationshipBuilder:
             # Save metadata
             self._save_metadata()
 
-            # Cleanup if requested
-            if cleanup_after:
-                self.cleanup_intermediate_files()
-
             logger.info("\n" + "=" * 70)
             logger.info("PIPELINE COMPLETED SUCCESSFULLY")
             logger.info(f"Duration: {duration}")
@@ -910,7 +865,7 @@ def main():
 
     # Build relationships
     try:
-        relationships = builder.build_relationships(cleanup_after=True)
+        relationships = builder.build_relationships()
         total = sum(len(df) for df in relationships.values())
         logger.info(f"\n✓ Successfully generated {total:,} relationships!")
 
